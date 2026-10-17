@@ -23,12 +23,15 @@ export function parseNumbers(text) {
   const cleaned = text
     .toUpperCase()
     .replace(/(\d)\s*[|\\IL!]\s*(\d)/g, '$1/$2');
-  const re = /([A-Z]{0,3}?)\s?([0-9O]{1,3})\s*\/\s*([A-Z]{0,3}?)\s?([0-9O]{2,3})(?![0-9])/g;
+  // O, B and S inside a number are read as 0, 8 and 5 (common OCR mix-ups).
+  const re = /([A-Z]{0,3}?)\s?([0-9OBS]{1,3})\s*\/\s*([A-Z]{0,3}?)\s?([0-9OBS]{2,3})(?![0-9])/g;
   const out = [];
   let m;
   while ((m = re.exec(cleaned))) {
-    const num = m[2].replace(/O/g, '0');
-    const total = m[4].replace(/O/g, '0');
+    if (!/\d/.test(m[2]) || !/\d/.test(m[4])) continue;
+    const fix = (t) => t.replace(/O/g, '0').replace(/B/g, '8').replace(/S/g, '5');
+    const num = fix(m[2]);
+    const total = fix(m[4]);
     const prefix = m[1] && m[1] === m[3] ? m[1] : '';
     const cand = { number: prefix + num, numeric: parseInt(num, 10), total: parseInt(total, 10), prefix };
     if (cand.total > 0) out.push(cand);
@@ -212,4 +215,15 @@ export function collectionTotal(items) {
     else unpriced += it.qty;
   }
   return { total: Math.round(total * 100) / 100, priced, unpriced, count };
+}
+
+// True when two card numbers differ in exactly one digit (OCR often swaps 6/8, 1/7, 3/8).
+export function oneDigitOff(localId, parsed) {
+  const a = String(localId).toUpperCase().match(/^([A-Z]*)0*(\d+)$/);
+  if (!a || a[1] !== (parsed.prefix || '')) return false;
+  const x = a[2].padStart(3, '0'), y = String(parsed.numeric).padStart(3, '0');
+  if (x.length !== y.length) return false;
+  let diff = 0;
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) diff++;
+  return diff === 1;
 }

@@ -1,7 +1,8 @@
 import {
   parseNumbers, parsePromo, pickNumber, formatNumber, parseName, setsForTotal, sameLocalId, rankCandidates,
-  buildNameIndex, bestNameMatch, collectionPrice, collectionTotal,
+  buildNameIndex, bestNameMatch, oneDigitOff, similarity, collectionPrice, collectionTotal,
 } from './match.js';
+import { detectCard } from './vision.js';
 
 const API = 'https://api.tcgdex.net/v2';
 const OCR_LANG = { fr: 'fra', en: 'eng' };
@@ -16,6 +17,7 @@ const CARD_REGIONS = {
 };
 // For uploaded photos that are not cropped to the card.
 const LOOSE_REGIONS = {
+  loose: true,
   name: { x: 0, y: 0, w: 1, h: 0.22 },
   numbers: [{ x: 0, y: 0.76, w: 0.55, h: 0.24 }, { x: 0.45, y: 0.76, w: 0.55, h: 0.24 }],
 };
@@ -177,7 +179,12 @@ async function findCandidates(lang, name, numText) {
     for (const set of full) {
       if (!set || !set.cards) continue;
       const exact = set.cardCount?.official === parsed.total;
-      for (const c of set.cards) if (sameLocalId(c.localId, parsed)) cards.push({ ...c, setName: set.name, official: set.cardCount?.official, exact });
+      for (const c of set.cards) {
+        const same = sameLocalId(c.localId, parsed);
+        // A misread digit (056 read as 058) is fixed when the name clearly matches.
+        const near = !same && name && oneDigitOff(c.localId, parsed) && similarity(c.name, name) >= 0.8;
+        if (same || near) cards.push({ ...c, setName: set.name, official: set.cardCount?.official, exact, numberMatch: same });
+      }
     }
   }
   if (!cards.length && name && name.trim().length >= 3) {
@@ -189,7 +196,7 @@ async function findCandidates(lang, name, numText) {
     }
   }
   return rankCandidates(cards, name)
-    .map((c) => ({ ...c, score: c.score + (c.exact ? 0.05 : 0) }))
+    .map((c) => ({ ...c, score: c.score + (c.exact ? 0.05 : 0) + (c.numberMatch === false ? -0.1 : 0) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, 12);
 }
@@ -252,34 +259,65 @@ async function getWorker() {
   return state.worker;
 }
 
-// Crops a region, enlarges it and boosts contrast so small print reads better.
-function prep(src, r, invert = false) {
+// Crops a region and scales it so text is a size the reader likes.
+// mode: 'gray' (contrast stretch), 'adapt' (each pixel compared with its
+// surroundings: best for small print), 'dark' (keeps only dark, uncoloured
+// pixels: black text on a holo or patterned background).
+function prep(src, r, { mode = 'gray', targetH = 0, invert = false } = {}) {
   const W = src.width, H = src.height;
   const sx = r.x * W, sy = r.y * H, sw = r.w * W, sh = r.h * H;
-  const scale = Math.min(4, Math.max(1, 1600 / sw));
+  const scale = targetH ? targetH / sh : Math.min(4, Math.max(1, 1600 / sw));
   const c = document.createElement('canvas');
-  c.width = Math.round(sw * scale); c.height = Math.round(sh * scale);
+  c.width = Math.max(1, Math.round(sw * scale)); c.height = Math.max(1, Math.round(sh * scale));
   const ctx = c.getContext('2d', { willReadFrequently: true });
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
   const img = ctx.getImageData(0, 0, c.width, c.height);
-  const d = img.data;
-  const hist = new Uint32Array(256);
-  for (let i = 0; i < d.length; i += 4) {
-    const g = (d[i] * 0.299 + d[i + 1] * 0.587 + d[i + 2] * 0.114) | 0;
-    d[i] = g; hist[g]++;
+  const d = img.data, n = d.length / 4, cw = c.width, ch = c.height;
+  const g = new Float32Array(n);
+  for (let i = 0; i < n; i++) g[i] = d[i * 4] * 0.299 + d[i * 4 + 1] * 0.587 + d[i * 4 + 2] * 0.114;
+  let out = g;
+  if (mode === 'dark') {
+    out = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const r = d[i * 4], gg = d[i * 4 + 1], b = d[i * 4 + 2];
+      const mx = Math.max(r, gg, b), mn = Math.min(r, gg, b);
+      out[i] = mx < 90 && mx - mn < 60 ? 0 : 255;
+    }
+  } else if (mode === 'adapt') {
+    // Integral image for fast local means.
+    const I = new Float64Array((cw + 1) * (ch + 1));
+    for (let y = 0; y < ch; y++) {
+      let row = 0;
+      for (let x = 0; x < cw; x++) { row += g[y * cw + x]; I[(y + 1) * (cw + 1) + x + 1] = I[y * (cw + 1) + x + 1] + row; }
+    }
+    const rad = Math.max(4, Math.round(ch * 0.5));
+    out = new Float32Array(n);
+    for (let y = 0; y < ch; y++) {
+      const y0 = Math.max(0, y - rad), y1 = Math.min(ch, y + rad);
+      for (let x = 0; x < cw; x++) {
+        const x0 = Math.max(0, x - rad), x1 = Math.min(cw, x + rad);
+        const sum = I[y1 * (cw + 1) + x1] - I[y0 * (cw + 1) + x1] - I[y1 * (cw + 1) + x0] + I[y0 * (cw + 1) + x0];
+        const mean = sum / ((x1 - x0) * (y1 - y0));
+        const dark = g[y * cw + x] < mean * 0.8;
+        out[y * cw + x] = (invert ? !dark : dark) ? 0 : 255;
+      }
+    }
+  } else {
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < n; i++) hist[g[i] | 0]++;
+    let lo = 0, hi = 255, acc = 0;
+    for (; lo < 255 && (acc += hist[lo]) < n * 0.02; lo++);
+    acc = 0;
+    for (; hi > 0 && (acc += hist[hi]) < n * 0.02; hi--);
+    const span = Math.max(1, hi - lo);
+    out = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const v = Math.min(255, Math.max(0, ((g[i] - lo) * 255) / span));
+      out[i] = invert ? 255 - v : v;
+    }
   }
-  const total = d.length / 4;
-  let lo = 0, hi = 255, acc = 0;
-  for (; lo < 255 && (acc += hist[lo]) < total * 0.02; lo++);
-  acc = 0;
-  for (; hi > 0 && (acc += hist[hi]) < total * 0.02; hi--);
-  const span = Math.max(1, hi - lo);
-  for (let i = 0; i < d.length; i += 4) {
-    let g = Math.min(255, Math.max(0, ((d[i] - lo) * 255) / span));
-    if (invert) g = 255 - g;
-    d[i] = d[i + 1] = d[i + 2] = g;
-  }
+  for (let i = 0; i < n; i++) d[i * 4] = d[i * 4 + 1] = d[i * 4 + 2] = out[i];
   ctx.putImageData(img, 0, 0);
   return c;
 }
@@ -292,63 +330,91 @@ function linesOf(data) {
   return out.length ? out : [{ text: data.text || '', height: 1 }];
 }
 
-async function ocr(worker, canvas, mode) {
-  await worker.setParameters({
-    tessedit_pageseg_mode: mode === 'number' ? '11' : '6',
-    tessedit_char_whitelist: mode === 'number' ? '0123456789/ABCDEFGHIJKLMNOPQRSTUVWXYZ' : '',
-  });
+// Debug trail of the last scan (read by tests).
+window.__scanDebug = [];
+async function ocr(worker, canvas, psm, label) {
+  await worker.setParameters({ tessedit_pageseg_mode: psm, tessedit_char_whitelist: '' });
   const { data } = await worker.recognize(canvas, {}, { text: true, blocks: true });
+  window.__scanDebug.push({ label, text: data.text, img: window.__keepImages ? canvas.toDataURL('image/png') : null });
   return data;
 }
 
-async function readNumber(worker, canvas, regions, sets) {
-  for (const invert of [false, true]) {
-    const found = [];
-    for (const r of regions.numbers) found.push(...parseNumbers((await ocr(worker, prep(canvas, r, invert), 'number')).text));
-    const pick = pickNumber(found, sets);
-    if (pick) return pick;
+// Small windows along the bottom of the card, most likely spots first.
+// Newer cards print the number bottom left, older ones bottom right.
+function numberWindows(regions) {
+  if (regions.loose) {
+    const out = [];
+    for (const y of [0.8, 0.84, 0.88, 0.92]) for (const x of [0, 0.3, 0.6]) out.push({ x, y, w: 0.4, h: 0.05 });
+    return out;
   }
-  // No "136/189" style number: look for a promo number such as SM57.
-  for (const r of regions.numbers) {
-    const promo = parsePromo((await ocr(worker, prep(canvas, r), 'number')).text);
-    if (promo) return promo;
-  }
-  return null;
+  const out = [];
+  for (const y of [0.925, 0.94, 0.91, 0.955, 0.895]) for (const x of [0, 0.6, 0.3]) out.push({ x, y, w: 0.4, h: 0.045 });
+  return out;
 }
 
-// Picks the name: closest known card name first, raw OCR text as a fallback.
-async function readName(worker, canvas, region, index) {
-  for (const invert of [false, true]) {
-    const lines = linesOf(await ocr(worker, prep(canvas, region, invert), 'name'));
-    const byHeight = [...lines].sort((a, b) => b.height - a.height);
-    for (const l of byHeight.slice(0, 3)) {
-      const hit = bestNameMatch(l.text, index);
-      if (hit && hit.score >= 0.7) return hit.name;
-    }
-    const hit = bestNameMatch(lines.map((l) => l.text).join(' '), index);
-    if (hit) return hit.name;
-    const raw = parseName(lines);
-    if (raw) return raw;
+async function readNumber(worker, canvas, regions, sets) {
+  const seen = [];
+  for (const r of numberWindows(regions)) {
+    const text = (await ocr(worker, prep(canvas, r, { mode: 'adapt', targetH: 140 }), '6', 'number')).text;
+    const pick = pickNumber(parseNumbers(text), sets);
+    if (pick) return pick;
+    seen.push(text);
   }
-  return '';
+  // No "136/189" style number: look for a promo number such as SM57.
+  return parsePromo(seen.join(' '));
+}
+
+// Reads the name line and returns the closest known card name.
+async function readName(worker, canvas, regions, index) {
+  const region = regions.loose ? { x: 0.05, y: 0.02, w: 0.8, h: 0.2 } : { x: 0.05, y: 0.025, w: 0.72, h: 0.07 };
+  const psm = regions.loose ? '11' : '7';
+  let best = null, raw = '';
+  const mid = regions.loose ? region : { x: 0.12, y: 0.025, w: 0.5, h: 0.07 };
+  const tries = [
+    [region, { mode: 'gray', targetH: 120 }], [region, { mode: 'dark', targetH: 110 }], [mid, { mode: 'gray', targetH: 110 }],
+    [mid, { mode: 'dark', targetH: 110 }], [region, { mode: 'adapt', targetH: 120, invert: true }],
+  ];
+  for (const [r, opts] of tries) {
+    const data = await ocr(worker, prep(canvas, r, opts), psm, 'name');
+    const lines = linesOf(data);
+    for (const l of lines) {
+      const hit = bestNameMatch(l.text, index);
+      if (hit && (!best || hit.score > best.score)) best = hit;
+    }
+    if (!raw) raw = parseName(lines);
+    if (best && best.score >= 0.85) break;
+  }
+  return best && best.score >= 0.7 ? best.name : raw;
 }
 
 async function readCard(canvas, regions) {
+  window.__scanDebug = [];
   const lang = state.lang;
   const [worker, sets, index] = await Promise.all([getWorker(), physicalSets(lang).catch(() => null), getNameIndex(lang)]);
   setStatus('Reading card…', 0);
-  let number = await readNumber(worker, canvas, regions, sets);
-  let name = await readName(worker, canvas, regions.name, index);
-  if (!number || !name) {
-    // Last try for loose photos: read the whole image.
-    const all = await ocr(worker, prep(canvas, { x: 0, y: 0, w: 1, h: 1 }), 'name');
-    if (!number) number = pickNumber(parseNumbers(all.text), sets) || parsePromo(all.text);
-    if (!name) name = bestNameMatch(all.text, index)?.name || '';
-  }
+  const number = await readNumber(worker, canvas, regions, sets);
+  const name = await readName(worker, canvas, regions, index);
   return { name, number: formatNumber(number) };
 }
 
 // ---------- Scan flow ----------
+// Finds the card in the picture and returns a canvas with just the card,
+// or null when no card shape is found.
+function cropToCard(src) {
+  const small = document.createElement('canvas');
+  const s = Math.min(1, 400 / src.width);
+  small.width = Math.round(src.width * s); small.height = Math.round(src.height * s);
+  const ctx = small.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(src, 0, 0, small.width, small.height);
+  const box = detectCard(ctx.getImageData(0, 0, small.width, small.height).data, small.width, small.height);
+  if (!box) return null;
+  const out = document.createElement('canvas');
+  out.width = Math.round(box.w / s); out.height = Math.round(box.h / s);
+  out.getContext('2d').drawImage(src, box.x / s, box.y / s, box.w / s, box.h / s, 0, 0, out.width, out.height);
+  return out;
+}
+
 async function runScan(canvas, regions) {
   if (state.busy) return;
   state.busy = true;
@@ -642,7 +708,8 @@ async function importBackup(file) {
 els.scan.addEventListener('click', () => {
   if (!state.stream) return startCamera();
   if (els.video.hidden) { showLive(); return; }
-  runScan(grabFrame(), CARD_REGIONS);
+  const frame = grabFrame();
+  runScan(cropToCard(frame) || frame, CARD_REGIONS);
 });
 
 els.file.addEventListener('change', async () => {
@@ -660,8 +727,9 @@ els.file.addEventListener('change', async () => {
   c.width = img.naturalWidth; c.height = img.naturalHeight;
   c.getContext('2d').drawImage(img, 0, 0);
   els.file.value = '';
-  const cropped = Math.abs(c.width / c.height - 63 / 88) < 0.08;
-  await runScan(c, cropped ? CARD_REGIONS : LOOSE_REGIONS);
+  const card = cropToCard(c);
+  const cropped = card || Math.abs(c.width / c.height - 63 / 88) < 0.08 ? (card || c) : null;
+  await runScan(cropped || c, cropped ? CARD_REGIONS : LOOSE_REGIONS);
 });
 
 els.form.addEventListener('submit', (e) => { e.preventDefault(); search(); });
