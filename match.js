@@ -23,7 +23,8 @@ export function parseNumbers(text) {
     .toUpperCase()
     .replace(/(\d)\s*[|\\IL!]\s*(\d)/g, '$1/$2');
   // O, B and S inside a number are read as 0, 8 and 5 (common OCR mix-ups).
-  const re = /([A-Z]{0,3}?)\s?([0-9OBS]{1,3})\s*\/\s*([A-Z]{0,3}?)\s?([0-9OBS]{2,3})(?![0-9])/g;
+  // A trailing 0/O right after the set size is usually the rarity symbol (● ◆).
+  const re = /([A-Z]{0,3}?)\s?([0-9OBS]{1,3})\s*\/\s*([A-Z]{0,3}?)\s?([0-9OBS]{2,3})[0O]?(?![0-9])/g;
   const out = [];
   let m;
   while ((m = re.exec(cleaned))) {

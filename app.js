@@ -191,7 +191,10 @@ async function lookup(lang, signals) {
   let ranked = scoreCandidates([...pool.values()], { numbers, texts }).filter((c) => c.numScore >= 0.6 || c.nameMatch >= 0.75 || (c.numScore > 0 && c.nameMatch >= 0.55));
 
   // 2. Nothing convincing from the number: search the database by the best name guess.
-  if ((!ranked.length || ranked[0].agree === 'weak') && guess && guess.length >= 3) {
+  //    Also when only a slash-less reading was found: a chance match there
+  //    must compete with every card of that name.
+  const onlyLoose = !(signals.numbers || []).length && !promo;
+  if ((!ranked.length || ranked[0].agree === 'weak' || onlyLoose) && guess && guess.length >= 3) {
     const list = ((await api(lang, `/cards?name=${encodeURIComponent(guess)}`)) || [])
       .filter((c) => !pocket.has(setIdOf(c.id)) && !pool.has(c.id)).slice(0, 60);
     ranked = scoreCandidates([...ranked, ...list], { numbers, texts: texts.length ? texts : [guess] });
