@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Card Scan FR/EN</title>
-<meta name="description" content="Scan a Pokémon card with your camera and see its Cardmarket price, for French and English cards.">
+<meta name="description" content="Scan Pokémon cards, build your collection and see its Cardmarket value. French and English cards.">
 <meta name="theme-color" content="#151a2e">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -14,7 +14,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
 <style>
-/* Layout: one narrow column, viewfinder first, results stack below it. */
+/* Layout: two tabs (Scan, Collection) with a bottom tab bar; matches open in a bottom sheet. */
 :root {
   --bg: #f3f4f8;
   --surface: #ffffff;
@@ -25,37 +25,40 @@
   --accent-ink: #151a2e;
   --good: #1f8a5b;
   --warn: #b5541c;
+  --scrim: rgba(10, 12, 24, 0.5);
   --display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
   --body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  --tabbar: 64px;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #0e1222; --surface: #181d33; --ink: #eef0f8; --muted: #9aa0bf; --line: #2a3050;
-    --accent: #ffc928; --accent-ink: #151a2e; --good: #4cc98f; --warn: #f08a4b; color-scheme: dark;
+    --accent: #ffc928; --accent-ink: #151a2e; --good: #4cc98f; --warn: #f08a4b; --scrim: rgba(0, 0, 0, 0.6); color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #0e1222; --surface: #181d33; --ink: #eef0f8; --muted: #9aa0bf; --line: #2a3050;
-  --accent: #ffc928; --accent-ink: #151a2e; --good: #4cc98f; --warn: #f08a4b; color-scheme: dark;
+  --accent: #ffc928; --accent-ink: #151a2e; --good: #4cc98f; --warn: #f08a4b; --scrim: rgba(0, 0, 0, 0.6); color-scheme: dark;
 }
 * { box-sizing: border-box; }
-html { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+html { padding-top: env(safe-area-inset-top, 0px); }
 body {
   margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 var(--body);
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
-  padding-block: 12px 40px;
+  padding-block: 12px calc(var(--tabbar) + env(safe-area-inset-bottom, 0px) + 24px);
 }
 img { max-width: 100%; }
 [hidden] { display: none !important; }
-main { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+main { max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
 header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-h1 { font: 800 1.5rem/1.1 var(--display); margin: 0; letter-spacing: -0.01em; }
+h1 { font: 800 1.45rem/1.1 var(--display); margin: 0; letter-spacing: -0.01em; }
 h1 span { color: var(--muted); font-weight: 600; }
-h2 { font: 800 1.35rem/1.2 var(--display); margin: 0; text-wrap: balance; }
+h2 { font: 800 1.3rem/1.2 var(--display); margin: 0; text-wrap: balance; color: var(--ink); }
 .label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+.view { display: flex; flex-direction: column; gap: 14px; }
 
 .lang { display: inline-flex; border: 2px solid var(--ink); border-radius: 999px; padding: 2px; }
 .lang button {
@@ -64,126 +67,215 @@ h2 { font: 800 1.35rem/1.2 var(--display); margin: 0; text-wrap: balance; }
 }
 .lang button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
 
+/* Scan */
 .finder {
   position: relative; background: #000; border-radius: 18px; overflow: hidden;
-  aspect-ratio: 3 / 4; max-width: 100%;
+  aspect-ratio: 3 / 4; width: min(100%, calc((100dvh - 300px) * 0.75)); margin: 0 auto; max-width: 100%;
 }
 .finder video, .finder img.still { width: 100%; height: 100%; object-fit: cover; display: block; }
 .frame {
-  position: absolute; left: 50%; top: 50%; width: 72%; aspect-ratio: 63 / 88;
+  position: absolute; left: 50%; top: 50%; width: 74%; aspect-ratio: 63 / 88;
   transform: translate(-50%, -50%); border-radius: 4.5%/3.2%;
   box-shadow: 0 0 0 9999px rgba(8, 10, 20, 0.55); border: 2px solid var(--accent);
 }
 .frame::before, .frame::after {
-  content: ""; position: absolute; left: 6%; right: 6%; border: 1px dashed rgba(255, 255, 255, 0.55); border-radius: 4px;
+  content: ""; position: absolute; left: 4%; right: 4%; border: 1px dashed rgba(255, 255, 255, 0.6); border-radius: 4px;
 }
-.frame::before { top: 2.5%; height: 9%; }
-.frame::after { bottom: 2%; height: 7%; }
-.finder-msg {
-  position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
-  color: #fff; padding: 24px; font-size: 0.95rem;
-}
-.hint { position: absolute; left: 0; right: 0; bottom: 10px; text-align: center; color: #fff; font-size: 0.8rem; opacity: 0.85; }
+.frame::before { top: 2%; height: 10%; }
+.frame::after { bottom: 1.5%; height: 10%; }
+.finder-msg { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; color: #fff; padding: 24px; font-size: 0.95rem; }
+.hint { position: absolute; left: 0; right: 0; bottom: 8px; text-align: center; color: #fff; font-size: 0.78rem; opacity: 0.85; padding: 0 12px; }
 
 .actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .btn {
   font: 600 1rem var(--body); border-radius: 12px; padding: 12px 18px; cursor: pointer;
   border: 2px solid var(--ink); background: transparent; color: var(--ink); flex: 1 1 140px;
-  display: inline-flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none; min-height: 48px;
 }
-.panel > .btn { flex: none; }
-.meta h2 { color: var(--ink); }
 .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.small { padding: 8px 12px; font-size: 0.9rem; min-height: 40px; flex: 0 0 auto; }
+.btn.quiet { border-color: var(--line); }
 .btn:disabled { opacity: 0.5; cursor: default; }
-.btn:focus-visible, .lang button:focus-visible, input:focus-visible, .cand:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.btn:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 
-.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-.status { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 0.95rem; }
+.status { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 0.95rem; min-height: 1.5em; }
 .bar { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
 .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
 
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+details.panel summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; justify-content: space-between; }
+details.panel summary::after { content: "+"; color: var(--muted); font-weight: 500; }
+details.panel[open] summary::after { content: "–"; }
 .fields { display: grid; grid-template-columns: 1fr 120px; gap: 10px; }
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.field input {
+.field input, select {
   font: 500 1rem var(--body); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
   background: var(--bg); color: var(--ink); width: 100%;
 }
 .field input#num { font-family: var(--mono); }
 
-.cands { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.cand {
-  border: 2px solid transparent; background: var(--bg); border-radius: 10px; padding: 6px; cursor: pointer;
-  display: flex; flex-direction: column; gap: 4px; text-align: left; color: var(--ink); font: inherit; min-width: 0;
+/* Bottom sheet */
+.scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 20; }
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 21; background: var(--surface);
+  border-radius: 20px 20px 0 0; max-height: 88dvh; overflow-y: auto;
+  padding: 10px max(16px, env(safe-area-inset-right, 0px)) calc(16px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.25); animation: up 0.22s ease-out;
 }
-.cand.best { border-color: var(--accent); }
-.cand img, .cand .noimg { width: 100%; aspect-ratio: 63 / 88; object-fit: cover; border-radius: 6px; background: var(--line); }
-.cand b { font-size: 0.82rem; line-height: 1.2; overflow-wrap: anywhere; }
-.cand small { font: 500 0.7rem var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+.sheet-inner { max-width: 560px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
+.grab { width: 40px; height: 4px; border-radius: 2px; background: var(--line); margin: 0 auto 4px; }
+@keyframes up { from { transform: translateY(40px); opacity: 0.6; } to { transform: none; opacity: 1; } }
+.sheet-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.icon-btn { border: 0; background: var(--bg); color: var(--ink); width: 36px; height: 36px; border-radius: 50%; font-size: 1.2rem; cursor: pointer; flex: none; }
 
-.result { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 14px; align-items: start; }
-.result img { width: 100%; border-radius: 8px; }
+.match { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 14px; align-items: start; }
+.match img, .noimg { width: 100%; aspect-ratio: 63 / 88; object-fit: cover; border-radius: 8px; background: var(--line); display: block; }
 .meta { font-size: 0.9rem; color: var(--muted); display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.meta .num { font-family: var(--mono); }
-.price-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-.price-main strong { font: 800 2.2rem/1 var(--display); font-variant-numeric: tabular-nums; }
-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 0.95rem; }
-th, td { text-align: right; padding: 7px 4px; border-bottom: 1px solid var(--line); }
-th:first-child, td:first-child { text-align: left; color: var(--muted); font-weight: 500; }
-thead th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
-.note { font-size: 0.82rem; color: var(--muted); }
+.num { font-family: var(--mono); font-size: 0.85rem; }
+.price-big { font: 800 2rem/1.1 var(--display); font-variant-numeric: tabular-nums; color: var(--ink); margin-top: 6px; }
+.note { font-size: 0.82rem; color: var(--muted); margin: 0; }
 .note.warn { color: var(--warn); }
-.empty { color: var(--muted); font-size: 0.95rem; }
-@media (max-width: 380px) { .fields { grid-template-columns: 1fr; } .result { grid-template-columns: 96px minmax(0, 1fr); } }
-@media (prefers-reduced-motion: reduce) { .bar i { transition: none; } }
+
+.stepper { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; flex: none; }
+.stepper button { width: 40px; height: 44px; border: 0; background: var(--bg); color: var(--ink); font-size: 1.2rem; cursor: pointer; }
+.stepper output { min-width: 36px; text-align: center; font: 600 1rem var(--mono); }
+.add-row { display: flex; gap: 10px; align-items: center; }
+.add-row .btn { flex: 1; }
+
+.alts { display: flex; gap: 10px; overflow-x: auto; padding-bottom: 4px; scroll-snap-type: x mandatory; }
+.alt {
+  flex: 0 0 92px; border: 2px solid transparent; background: var(--bg); border-radius: 10px; padding: 5px; cursor: pointer;
+  display: flex; flex-direction: column; gap: 3px; text-align: left; color: var(--ink); font: inherit; scroll-snap-align: start;
+}
+.alt[aria-current="true"] { border-color: var(--accent); }
+.alt b { font-size: 0.75rem; line-height: 1.2; overflow-wrap: anywhere; }
+.alt small { font: 500 0.66rem var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+
+/* Collection */
+.summary { display: flex; flex-direction: column; gap: 6px; }
+.total { font: 800 2.6rem/1 var(--display); font-variant-numeric: tabular-nums; }
+.sub { color: var(--muted); font-size: 0.9rem; }
+.toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.toolbar select { width: auto; flex: 1 1 160px; }
+.list { display: flex; flex-direction: column; }
+.row { display: grid; grid-template-columns: 52px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.row:last-child { border-bottom: 0; }
+.row img, .row .noimg { width: 52px; border-radius: 4px; }
+.row-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.row-main b { font-size: 0.98rem; line-height: 1.2; overflow-wrap: anywhere; }
+.row-main small { color: var(--muted); font-size: 0.78rem; overflow-wrap: anywhere; }
+.row-side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; font-variant-numeric: tabular-nums; }
+.row-side strong { font-size: 1rem; }
+.row .stepper button { width: 32px; height: 32px; font-size: 1rem; }
+.row .stepper output { min-width: 26px; font-size: 0.9rem; }
+.chip { display: inline-block; font: 600 0.62rem var(--mono); padding: 1px 5px; border-radius: 4px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); margin-right: 4px; vertical-align: 1px; }
+.empty { color: var(--muted); text-align: center; padding: 24px 8px; }
+
+/* Tab bar */
+.tabbar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; background: var(--surface); border-top: 1px solid var(--line);
+  display: flex; justify-content: center; gap: 8px;
+  padding: 6px max(16px, env(safe-area-inset-right, 0px)) calc(6px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+}
+.tabbar button {
+  flex: 1; max-width: 260px; height: 52px; border: 0; border-radius: 12px; background: transparent; color: var(--muted);
+  font: 600 0.95rem var(--body); cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+}
+.tabbar button[aria-selected="true"] { background: var(--bg); color: var(--ink); }
+.badge { background: var(--accent); color: var(--accent-ink); border-radius: 999px; font: 600 0.72rem var(--mono); padding: 1px 7px; }
+.toast {
+  position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--tabbar) + env(safe-area-inset-bottom, 0px) + 14px); z-index: 30;
+  background: var(--ink); color: var(--bg); padding: 10px 14px; border-radius: 12px; font-size: 0.92rem; display: flex; gap: 12px; align-items: center;
+  max-width: calc(100% - 32px); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
+}
+.toast button { background: transparent; border: 0; color: var(--accent); font: 600 0.92rem var(--body); cursor: pointer; padding: 0; }
+@media (max-width: 380px) { .fields { grid-template-columns: 1fr; } .match { grid-template-columns: 96px minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .bar i { transition: none; } .sheet { animation: none; } }
 </style>
 </head>
 <body>
 <main>
   <header>
     <h1>Card Scan <span>FR/EN</span></h1>
-    <div class="lang" role="group" aria-label="Card language">
+    <div class="lang" role="group" aria-label="Card language for scanning">
       <button type="button" id="lang-fr" data-lang="fr" aria-pressed="true">FR</button>
       <button type="button" id="lang-en" data-lang="en" aria-pressed="false">EN</button>
     </div>
   </header>
 
-  <section class="finder" id="finder" aria-label="Camera">
-    <video id="video" playsinline muted autoplay></video>
-    <img class="still" id="still" alt="Scanned photo" hidden>
-    <div class="frame" id="frame" aria-hidden="true"></div>
-    <div class="finder-msg" id="finder-msg">Tap <b>&nbsp;Start camera&nbsp;</b> or upload a photo of one card.</div>
-    <div class="hint" id="hint" hidden>Fit the card in the frame. Name in the top box, number in the bottom box.</div>
-  </section>
-
-  <div class="actions">
-    <button type="button" class="btn primary" id="btn-scan">Start camera</button>
-    <label class="btn" for="file">Upload photo</label>
-    <input type="file" id="file" accept="image/*" hidden>
-  </div>
-
-  <section class="panel" id="read-panel" aria-live="polite">
-    <div class="status" id="status">Pick FR or EN to match the card's language, then scan.</div>
+  <section class="view" id="view-scan" role="tabpanel" aria-labelledby="tab-scan">
+    <div class="finder" id="finder" aria-label="Camera">
+      <video id="video" playsinline muted autoplay></video>
+      <img class="still" id="still" alt="Scanned photo" hidden>
+      <div class="frame" id="frame" aria-hidden="true"></div>
+      <div class="finder-msg" id="finder-msg">Tap Start camera, or upload a photo of one card.</div>
+      <div class="hint" id="hint" hidden>Fill the frame with the card. Name in the top box, number in the bottom box.</div>
+    </div>
+    <div class="actions">
+      <button type="button" class="btn primary" id="btn-scan">Start camera</button>
+      <label class="btn" for="file">Upload photo</label>
+      <input type="file" id="file" accept="image/*" hidden>
+    </div>
+    <div class="status" id="status" aria-live="polite">Pick FR or EN to match the card, then scan.</div>
     <div class="bar" id="bar" hidden><i id="bar-fill"></i></div>
-    <form id="search-form" class="fields" autocomplete="off">
-      <div class="field">
-        <label class="label" for="name">Name</label>
-        <input id="name" name="name" placeholder="e.g. Fouinar">
-      </div>
-      <div class="field">
-        <label class="label" for="num">Number</label>
-        <input id="num" name="num" placeholder="136/189" inputmode="text">
-      </div>
-      <button type="submit" class="btn" id="btn-search" style="grid-column: 1 / -1">Search</button>
-    </form>
+    <details class="panel" id="manual">
+      <summary>Type name or number</summary>
+      <form id="search-form" class="fields" autocomplete="off">
+        <div class="field">
+          <label class="label" for="name">Name</label>
+          <input id="name" name="name" placeholder="e.g. Fouinar">
+        </div>
+        <div class="field">
+          <label class="label" for="num">Number</label>
+          <input id="num" name="num" placeholder="136/189">
+        </div>
+        <button type="submit" class="btn" style="grid-column: 1 / -1">Search</button>
+      </form>
+    </details>
   </section>
 
-  <section class="panel" id="cands-panel" hidden>
-    <div class="label" id="cands-title">Matches</div>
-    <div class="cands" id="cands"></div>
+  <section class="view" id="view-collection" role="tabpanel" aria-labelledby="tab-collection" hidden>
+    <div class="panel summary">
+      <div class="label">Collection value · 30-day average</div>
+      <div class="total" id="total">€0.00</div>
+      <div class="sub" id="total-sub">No cards yet</div>
+      <div class="toolbar">
+        <button type="button" class="btn small primary" id="btn-refresh">Refresh prices</button>
+        <select id="sort" aria-label="Sort cards">
+          <option value="value">Highest value first</option>
+          <option value="name">Name A to Z</option>
+          <option value="added">Recently added</option>
+        </select>
+      </div>
+      <div class="bar" id="refresh-bar" hidden><i id="refresh-fill"></i></div>
+      <p class="note warn" id="unpriced" hidden></p>
+    </div>
+    <div class="panel">
+      <div class="list" id="list"></div>
+    </div>
+    <div class="panel">
+      <div class="label">Backup</div>
+      <p class="note">Your collection is saved on this phone only. Export a backup file now and then, and import it on a new phone.</p>
+      <div class="actions">
+        <button type="button" class="btn small quiet" id="btn-export">Export backup</button>
+        <label class="btn small quiet" for="import">Import backup</label>
+        <input type="file" id="import" accept="application/json,.json" hidden>
+      </div>
+    </div>
   </section>
-
-  <section class="panel" id="result-panel" hidden></section>
 </main>
+
+<div class="scrim" id="scrim" hidden></div>
+<section class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" hidden>
+  <div class="sheet-inner" id="sheet-inner"></div>
+</section>
+
+<nav class="tabbar" role="tablist" aria-label="Sections">
+  <button type="button" role="tab" id="tab-scan" aria-controls="view-scan" aria-selected="true">Scan</button>
+  <button type="button" role="tab" id="tab-collection" aria-controls="view-collection" aria-selected="false">Collection <span class="badge" id="badge" hidden>0</span></button>
+</nav>
+<div class="toast" id="toast" role="status" hidden></div>
+
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <script type="module" src="app.js"></script>
 </body>

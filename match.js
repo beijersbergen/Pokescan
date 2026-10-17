@@ -16,24 +16,45 @@ export function normalize(s) {
     .trim();
 }
 
-// Finds a collector number like "136/189", "TG05/TG30" or "SV045/SV094".
+// Finds collector numbers like "136/189", "TG05/TG30" or "SV045/SV094".
 // OCR often reads "/" as "l", "I" or "|", and "O" for "0".
-export function parseNumber(text) {
-  if (!text) return null;
+export function parseNumbers(text) {
+  if (!text) return [];
   const cleaned = text
     .toUpperCase()
     .replace(/(\d)\s*[|\\IL!]\s*(\d)/g, '$1/$2');
   const re = /([A-Z]{0,3}?)\s?([0-9O]{1,3})\s*\/\s*([A-Z]{0,3}?)\s?([0-9O]{2,3})(?![0-9])/g;
-  let best = null;
+  const out = [];
   let m;
   while ((m = re.exec(cleaned))) {
     const num = m[2].replace(/O/g, '0');
     const total = m[4].replace(/O/g, '0');
     const prefix = m[1] && m[1] === m[3] ? m[1] : '';
     const cand = { number: prefix + num, numeric: parseInt(num, 10), total: parseInt(total, 10), prefix };
-    if (cand.total > 0 && (!best || cand.numeric <= cand.total)) best = cand;
+    if (cand.total > 0) out.push(cand);
   }
-  return best;
+  return out;
+}
+
+export function parseNumber(text) {
+  const all = parseNumbers(text);
+  return all.find((c) => c.numeric <= c.total) || all[0] || null;
+}
+
+// Keeps only numbers whose total matches a real set, best guess first.
+export function pickNumber(cands, sets) {
+  const totals = new Set();
+  for (const s of sets || []) {
+    if (s.cardCount?.official) totals.add(s.cardCount.official);
+    if (s.cardCount?.total) totals.add(s.cardCount.total);
+  }
+  const known = cands.filter((c) => totals.has(c.total));
+  const pool = known.length ? known : sets && sets.length ? [] : cands;
+  return pool.find((c) => c.numeric <= c.total) || pool[0] || null;
+}
+
+export function formatNumber(p) {
+  return p ? `${p.number}/${p.prefix}${p.total}` : '';
 }
 
 // Picks the most likely card name from the text at the top of the card.
@@ -108,4 +129,61 @@ export function rankCandidates(cards, ocrName) {
   return cards
     .map((c) => ({ ...c, score: ocrName ? similarity(c.name, ocrName) : 0 }))
     .sort((a, b) => b.score - a.score);
+}
+
+// Turns a list of known names into a lookup that tolerates OCR noise.
+export function buildNameIndex(names) {
+  return names
+    .map((name) => ({ name, key: normalize(name).replace(/\s/g, '') }))
+    .filter((n) => n.key.length >= 3);
+}
+
+// Finds the known name closest to noisy OCR text such as "F o Fouinor x PV 110".
+// Tries every run of 1 to 4 words, so stray letters and labels are ignored.
+export function bestNameMatch(text, index) {
+  if (!text || !index || !index.length) return null;
+  const words = normalize(text)
+    .split(' ')
+    .filter((w) => w.length >= 2 && !/\d/.test(w) && !NAME_STOPWORDS.has(w));
+  const phrases = new Set();
+  for (let i = 0; i < words.length; i++) {
+    let p = '';
+    for (let j = i; j < Math.min(words.length, i + 4); j++) {
+      p += words[j];
+      if (p.length >= 3) phrases.add(p);
+    }
+  }
+  let best = null;
+  for (const phrase of phrases) {
+    for (const n of index) {
+      if (Math.abs(n.key.length - phrase.length) > Math.max(2, n.key.length * 0.3)) continue;
+      const score = 1 - levenshtein(phrase, n.key) / Math.max(phrase.length, n.key.length);
+      if (!best || score > best.score || (score === best.score && n.key.length > best.key.length)) {
+        best = { name: n.name, key: n.key, score };
+      }
+    }
+  }
+  return best && best.score >= 0.6 ? { name: best.name, score: best.score } : null;
+}
+
+// Collection price: 30-day average of the normal version. Cards that only
+// exist as holo (variants.normal === false) use the holo price instead.
+export function collectionPrice(cm, variants) {
+  if (!cm) return null;
+  const holoOnly = variants && variants.normal === false && (variants.holo || variants.reverse);
+  const normal = [['avg30', false], ['trend', false], ['avg', false]];
+  const holo = [['avg30-holo', true], ['trend-holo', true], ['avg-holo', true]];
+  const order = holoOnly ? [...holo, ...normal] : [normal[0], holo[0], normal[1], holo[1], normal[2]];
+  for (const [k, isHolo] of order) if (cm[k] != null) return { value: cm[k], source: k, holo: isHolo };
+  return null;
+}
+
+export function collectionTotal(items) {
+  let total = 0, priced = 0, unpriced = 0, count = 0;
+  for (const it of items) {
+    count += it.qty;
+    if (it.price && it.price.value != null) { total += it.price.value * it.qty; priced += it.qty; }
+    else unpriced += it.qty;
+  }
+  return { total: Math.round(total * 100) / 100, priced, unpriced, count };
 }
