@@ -51,7 +51,10 @@ function save(key, value) {
 function loadCollection() {
   try {
     const data = JSON.parse(localStorage.getItem(STORE_KEY) || '[]');
-    return Array.isArray(data) ? data.filter(validItem) : [];
+    if (!Array.isArray(data)) return [];
+    const items = data.filter(validItem);
+    for (const it of items) if (it.price && !(it.price.value > 0)) it.price = null; // old versions stored 0
+    return items;
   } catch { return []; }
 }
 function validItem(it) {
@@ -84,7 +87,7 @@ function toast(text, action) {
   els.toast.replaceChildren(el('span', {}, text));
   if (action) els.toast.append(el('button', { type: 'button', onclick: () => { els.toast.hidden = true; action.run(); } }, action.label));
   els.toast.hidden = false;
-  toastTimer = setTimeout(() => { els.toast.hidden = true; }, action ? 6000 : 3000);
+  toastTimer = setTimeout(() => { els.toast.hidden = true; }, action ? 5000 : 3000);
 }
 const locale = () => (state.lang === 'fr' ? 'fr-FR' : 'en-IE');
 const eur = (x) => (x == null ? '–' : new Intl.NumberFormat(locale(), { style: 'currency', currency: 'EUR' }).format(x));
@@ -115,11 +118,16 @@ function showTab(which) {
 async function api(lang, path, { fresh = false } = {}) {
   const url = `${API}/${lang}${path}`;
   if (!fresh && cache.has(url)) return cache.get(url);
-  const p = fetch(url, fresh ? { cache: 'no-store' } : undefined).then(async (r) => {
-    if (r.status === 404) return null;
-    if (!r.ok) throw new Error(`Card database error (${r.status})`);
-    return r.json();
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  const p = fetch(url, { cache: fresh ? 'no-store' : 'default', signal: ctrl.signal })
+    .then(async (r) => {
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error(`Card database error (${r.status})`);
+      return r.json();
+    })
+    .catch((e) => { throw e.name === 'AbortError' ? new Error('The card database is slow to answer. Try again.') : e; })
+    .finally(() => clearTimeout(timer));
   cache.set(url, p);
   p.catch(() => cache.delete(url));
   return p;
@@ -132,26 +140,53 @@ async function getNameIndex(lang) {
   return nameIndex[lang];
 }
 
+// Sets from the digital game Pokémon TCG Pocket. They have no physical cards
+// and no Cardmarket prices, so they are left out of matching.
+const POCKET_FALLBACK = ['A1', 'P-A', 'A1a', 'A2', 'A2a', 'A2b', 'A3', 'A3a', 'A3b', 'A4', 'A4a', 'B1', 'B1a', 'B2', 'B2a'];
+let pocketSets;
+function getPocketSets() {
+  if (!pocketSets) {
+    pocketSets = api('en', '/series/tcgp')
+      .then((s) => new Set([...POCKET_FALLBACK, ...((s && s.sets) || []).map((x) => x.id)]))
+      .catch(() => new Set(POCKET_FALLBACK));
+  }
+  return pocketSets;
+}
+const setIdOf = (cardId) => cardId.slice(0, cardId.lastIndexOf('-'));
+
+async function physicalSets(lang) {
+  const [sets, pocket] = await Promise.all([api(lang, '/sets'), getPocketSets()]);
+  return (sets || []).filter((s) => !pocket.has(s.id));
+}
+
 async function findCandidates(lang, name, numText) {
   const parsed = pickNumber(parseNumbers(numText), null);
+  const pocket = await getPocketSets();
   let cards = [];
   if (parsed) {
-    const sets = setsForTotal((await api(lang, '/sets')) || [], parsed.total).slice(0, 10);
+    // Sets whose printed count matches exactly come first.
+    const sets = setsForTotal(await physicalSets(lang), parsed.total)
+      .sort((a, b) => (b.cardCount.official === parsed.total) - (a.cardCount.official === parsed.total))
+      .slice(0, 10);
     const full = await Promise.all(sets.map((s) => api(lang, `/sets/${encodeURIComponent(s.id)}`).catch(() => null)));
     for (const set of full) {
       if (!set || !set.cards) continue;
-      for (const c of set.cards) if (sameLocalId(c.localId, parsed)) cards.push({ ...c, setName: set.name, official: set.cardCount?.official });
+      const exact = set.cardCount?.official === parsed.total;
+      for (const c of set.cards) if (sameLocalId(c.localId, parsed)) cards.push({ ...c, setName: set.name, official: set.cardCount?.official, exact });
     }
   }
   if (!cards.length && name && name.trim().length >= 3) {
     const list = (await api(lang, `/cards?name=${encodeURIComponent(name.trim())}`)) || [];
-    cards = list.slice(0, 60);
+    cards = list.filter((c) => !pocket.has(setIdOf(c.id))).slice(0, 60);
     if (parsed) {
       const sameNum = cards.filter((c) => sameLocalId(c.localId, parsed));
       if (sameNum.length) cards = sameNum;
     }
   }
-  return rankCandidates(cards, name).slice(0, 12);
+  return rankCandidates(cards, name)
+    .map((c) => ({ ...c, score: c.score + (c.exact ? 0.05 : 0) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 12);
 }
 
 // ---------- Camera ----------
@@ -290,7 +325,7 @@ async function readName(worker, canvas, region, index) {
 
 async function readCard(canvas, regions) {
   const lang = state.lang;
-  const [worker, sets, index] = await Promise.all([getWorker(), api(lang, '/sets').catch(() => null), getNameIndex(lang)]);
+  const [worker, sets, index] = await Promise.all([getWorker(), physicalSets(lang).catch(() => null), getNameIndex(lang)]);
   setStatus('Reading card…', 0);
   let number = await readNumber(worker, canvas, regions, sets);
   let name = await readName(worker, canvas, regions.name, index);
@@ -357,8 +392,15 @@ async function selectCandidate(i, seq = ++state.seq) {
   if (!m) return;
   m.selected = i;
   m.card = null;
+  m.error = null;
   renderSheet();
-  const card = await api(m.lang, `/cards/${encodeURIComponent(m.cands[i].id)}`).catch(() => null);
+  let card = null;
+  try {
+    card = await api(m.lang, `/cards/${encodeURIComponent(m.cands[i].id)}`);
+    if (!card) m.error = 'This card has no details in the database.';
+  } catch (e) {
+    m.error = e.message === 'Failed to fetch' ? 'No connection to the card database.' : e.message;
+  }
   if (seq !== state.seq || state.match !== m || m.selected !== i) return;
   m.card = card;
   renderSheet();
@@ -366,6 +408,7 @@ async function selectCandidate(i, seq = ++state.seq) {
 
 // ---------- Sheet ----------
 function openSheet() {
+  els.toast.hidden = true;
   els.scrim.hidden = false;
   els.sheet.hidden = false;
 }
@@ -398,17 +441,18 @@ function renderSheet() {
         el('div', {}, card?.set?.name || c.setName || ''),
         el('div', { class: 'num' }, `${c.localId}${(card?.set?.cardCount?.official || c.official) ? '/' + (card?.set?.cardCount?.official || c.official) : ''}`),
         card?.rarity ? el('div', {}, card.rarity) : null,
-        el('div', { class: 'price-big' }, card ? eur(price?.value) : '…'),
+        el('div', { class: 'price-big' }, card ? (price ? eur(price.value) : 'No price') : m.error ? '?' : '…'),
         el('div', {}, card
-          ? (price ? `30-day average${price.holo ? ' (holo)' : ''} · trend ${eur(trend)}` : 'No Cardmarket price listed')
-          : 'Loading price…'),
+          ? (price ? `30-day average${price.holo ? ' (holo)' : ''}${trend > 0 ? ` · trend ${eur(trend)}` : ''}` : 'Cardmarket has no recent sales for this card.')
+          : m.error ? m.error : 'Loading price…'),
+        m.error ? el('button', { type: 'button', class: 'btn small quiet', onclick: () => selectCandidate(m.selected) }, 'Try again') : null,
         owned ? el('div', { class: 'num' }, `You have ${owned.qty}`) : null)),
     el('div', { class: 'add-row' },
       el('div', { class: 'stepper' },
         el('button', { type: 'button', 'aria-label': 'One less', onclick: () => setQty(m.qty - 1) }, '−'),
         qtyOut,
         el('button', { type: 'button', 'aria-label': 'One more', onclick: () => setQty(m.qty + 1) }, '+')),
-      el('button', { type: 'button', class: 'btn primary', disabled: !card, onclick: addToCollection }, 'Add to collection')),
+      el('button', { type: 'button', class: 'btn primary', onclick: addToCollection }, 'Add to collection')),
     m.cands.length > 1 ? el('div', { class: 'label' }, 'Not this card? Pick another') : null,
     m.cands.length > 1 ? el('div', { class: 'alts' }, m.cands.map((x, i) => el('button', {
       type: 'button', class: 'alt', 'aria-current': String(i === m.selected), onclick: () => selectCandidate(i),
@@ -420,26 +464,44 @@ function renderSheet() {
 
 function addToCollection() {
   const m = state.match;
-  const card = m?.card;
-  if (!card) return;
-  const key = `${m.lang}:${card.id}`;
-  const existing = state.collection.find((it) => keyOf(it) === key);
-  const cm = card.pricing?.cardmarket;
-  if (existing) {
-    existing.qty += m.qty;
+  // Close first, so the sheet never stays open, whatever happens next.
+  closeSheet();
+  if (!m) return;
+  const c = m.cands[m.selected];
+  const card = m.card;
+  const key = `${m.lang}:${c.id}`;
+  const added = m.qty;
+  let item = state.collection.find((it) => keyOf(it) === key);
+  if (item) {
+    item.qty += added;
   } else {
-    state.collection.push({
-      id: card.id, lang: m.lang, name: card.name, setName: card.set?.name || '', localId: card.localId,
-      official: card.set?.cardCount?.official || null, image: card.image || null, qty: m.qty, added: Date.now(),
-      price: collectionPrice(cm, card.variants), priceUpdated: cm?.updated || null,
-    });
+    item = {
+      id: c.id, lang: m.lang, name: card?.name || c.name, setName: card?.set?.name || c.setName || '', localId: card?.localId || c.localId,
+      official: card?.set?.cardCount?.official || c.official || null, image: card?.image || c.image || null, qty: added, added: Date.now(),
+      price: null, priceUpdated: null,
+    };
+    state.collection.push(item);
+  }
+  if (card) {
+    const cm = card.pricing?.cardmarket;
+    item.price = collectionPrice(cm, card.variants);
+    item.priceUpdated = cm?.updated || item.priceUpdated;
+  } else {
+    // Price was not loaded yet: fetch it in the background.
+    api(m.lang, `/cards/${encodeURIComponent(c.id)}`).then((full) => {
+      if (!full) return;
+      const cm = full.pricing?.cardmarket;
+      item.price = collectionPrice(cm, full.variants);
+      item.priceUpdated = cm?.updated || null;
+      saveCollection();
+      if (!els.viewCol.hidden) renderCollection();
+    }).catch(() => {});
   }
   saveCollection();
   renderBadge();
-  const added = m.qty;
-  closeSheet();
+  state.match = null;
   setStatus('Ready for the next card.');
-  toast(`Added ${added}× ${card.name}`, {
+  toast(`Added ${added}× ${item.name}`, {
     label: 'Undo',
     run: () => {
       const it = state.collection.find((x) => keyOf(x) === key);
@@ -499,7 +561,7 @@ function renderCollection() {
       el('div', { class: 'row-main' },
         el('b', {}, it.name),
         el('small', {}, el('span', { class: 'chip' }, it.lang.toUpperCase()), `${it.setName} · ${it.localId}${it.official ? '/' + it.official : ''}`),
-        el('small', {}, it.price ? `${eur(it.price.value)} each${it.price.holo ? ' (holo)' : ''}` : 'No price')),
+        el('small', {}, it.price ? `${eur(it.price.value)} each${it.price.holo ? ' (holo)' : ''}` : 'No recent sales on Cardmarket')),
       el('div', { class: 'row-side' },
         el('strong', {}, it.price ? eur(it.price.value * it.qty) : '–'),
         el('div', { class: 'stepper' },
@@ -613,6 +675,10 @@ for (const b of document.querySelectorAll('.lang button')) {
     getNameIndex(state.lang);
   });
 }
+
+// Show unexpected errors on screen, so they can be reported.
+window.addEventListener('error', (e) => toast(`Error: ${e.message}`));
+window.addEventListener('unhandledrejection', (e) => toast(`Error: ${e.reason?.message || e.reason}`));
 
 renderLang();
 renderBadge();

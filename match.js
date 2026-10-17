@@ -166,7 +166,8 @@ export function bestNameMatch(text, index) {
   return best && best.score >= 0.6 ? { name: best.name, score: best.score } : null;
 }
 
-// Collection price: 30-day average of the normal version. Cards that only
+// Collection price: 30-day average of the normal version. A 0 in the data
+// means "no sales", so it counts as no price. Cards that only
 // exist as holo (variants.normal === false) use the holo price instead.
 export function collectionPrice(cm, variants) {
   if (!cm) return null;
@@ -174,7 +175,7 @@ export function collectionPrice(cm, variants) {
   const normal = [['avg30', false], ['trend', false], ['avg', false]];
   const holo = [['avg30-holo', true], ['trend-holo', true], ['avg-holo', true]];
   const order = holoOnly ? [...holo, ...normal] : [normal[0], holo[0], normal[1], holo[1], normal[2]];
-  for (const [k, isHolo] of order) if (cm[k] != null) return { value: cm[k], source: k, holo: isHolo };
+  for (const [k, isHolo] of order) if (typeof cm[k] === 'number' && cm[k] > 0) return { value: cm[k], source: k, holo: isHolo };
   return null;
 }
 
@@ -182,7 +183,7 @@ export function collectionTotal(items) {
   let total = 0, priced = 0, unpriced = 0, count = 0;
   for (const it of items) {
     count += it.qty;
-    if (it.price && it.price.value != null) { total += it.price.value * it.qty; priced += it.qty; }
+    if (it.price && it.price.value > 0) { total += it.price.value * it.qty; priced += it.qty; }
     else unpriced += it.qty;
   }
   return { total: Math.round(total * 100) / 100, priced, unpriced, count };
