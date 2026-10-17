@@ -3,8 +3,7 @@
 const NAME_STOPWORDS = new Set([
   'base', 'basic', 'de', 'niveau', 'stage', 'pv', 'hp', 'pokemon', 'evolue',
   'evolves', 'from', 'trainer', 'dresseur', 'supporter', 'objet', 'item',
-  'stade', 'outil', 'tool', 'energie', 'energy', 'ex', 'gx', 'v', 'vmax',
-  'vstar', 'tera', 'niv', 'lv', 'du', 'of', 'the',
+  'stade', 'outil', 'tool', 'energie', 'energy', 'tera', 'niv', 'lv', 'du', 'of', 'the',
 ]);
 
 export function normalize(s) {
@@ -258,7 +257,8 @@ export function scoreCandidates(cards, { numbers = [], texts = [] }) {
     .map((c) => {
       let num = 0;
       for (const { parsed, votes } of numbers) {
-        const w = 0.6 + 0.4 * (votes / totalVotes);
+        // A slash-less reading is weak evidence on its own.
+        const w = parsed.loose ? 0.3 : 0.6 + 0.4 * (votes / totalVotes);
         if (sameLocalId(c.localId, parsed)) num = Math.max(num, w);
         else if (oneDigitOff(c.localId, parsed)) num = Math.max(num, 0.45 * w);
       }
@@ -283,4 +283,23 @@ export function isConfident(ranked) {
   if (a.nameMatch >= 0.75 && a.numScore > 0 && ranked.slice(1).every((c) => c.nameMatch < 0.5)) return true;
   if (ranked.length === 1) return a.score >= 0.4;
   return a.agree !== 'weak' && a.score - b.score >= 0.25;
+}
+
+// Numbers where the slash was lost, like "ky42264" for 142/264: a run of
+// 4-6 digits is split into number + set size. Only used together with the
+// name, so wrong splits do no harm.
+export function parseLooseNumbers(text) {
+  const out = [];
+  const t = (text || '').toUpperCase().replace(/[OB](?=\d)|(?<=\d)[OB]/g, (c) => (c === 'O' ? '0' : '8'));
+  for (const m of t.matchAll(/(?<![0-9/])(\d{4,6})(?![0-9/])/g)) {
+    const run = m[1];
+    if (/^(19|20)\d\d$/.test(run)) continue; // a year, like ©2021
+    for (const k of [run.length - 3, run.length - 2]) {
+      if (k < 1) continue;
+      const num = run.slice(0, k), total = parseInt(run.slice(k), 10);
+      if (total < 10) continue;
+      out.push({ number: num, numeric: parseInt(num, 10), total, prefix: '', loose: true });
+    }
+  }
+  return out;
 }

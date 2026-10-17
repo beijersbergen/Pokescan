@@ -45,6 +45,9 @@ export function detectCard(input, w, h, threshold = 90) {
   const ls = [], rs = [];
   for (let y = best[0]; y < best[1]; y++) { ls.push(L[y]); rs.push(R[y]); }
   const box = { x: median(ls), y: best[0], w: median(rs) - median(ls), h: best[1] - best[0] };
+  // Every card has the same shape. When the box is too tall (shadow, floor or
+  // another card below it), trust the width and the top edge.
+  if (box.w / box.h < CARD_RATIO - 0.03) box.h = Math.min(h - box.y, Math.round(box.w / CARD_RATIO));
   const ratio = box.w / box.h;
   const area = (box.w * box.h) / (w * h);
   if (area < 0.08 || Math.abs(ratio - CARD_RATIO) > 0.12) return null;

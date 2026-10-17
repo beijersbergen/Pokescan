@@ -1,5 +1,5 @@
 import {
-  parseNumbers, parsePromo, pickNumber, formatNumber, parseName, setsForTotal,
+  parseNumbers, parseLooseNumbers, parsePromo, pickNumber, formatNumber, parseName, setsForTotal,
   buildNameIndex, bestNameMatch, scoreCandidates, isConfident, collectionPrice, collectionTotal,
 } from './match.js';
 import { detectCard } from './vision.js';
@@ -177,7 +177,11 @@ async function lookup(lang, signals) {
     for (const c of set?.cards || []) add(c, { ...set, cardCount: { official: null } }, true);
     numbers.push({ parsed: promo, votes: 1 });
   }
-  const totals = [...new Set(numbers.filter((n) => !n.parsed.promo).map((n) => n.parsed.total))].slice(0, 3);
+  // Slash-less readings ("42264") only count when no clean number was read,
+  // and only cards whose name matches are kept from them.
+  const loose = numbers.length ? [] : (signals.looseNumbers || []);
+  numbers.push(...loose);
+  const totals = [...new Set(numbers.filter((n) => !n.parsed.promo).map((n) => n.parsed.total))].slice(0, 4);
   if (totals.length) {
     const all = await physicalSets(lang);
     const sets = totals.flatMap((t) => setsForTotal(all, t).map((s) => ({ s, exact: s.cardCount.official === t }))).slice(0, 12);
@@ -360,23 +364,47 @@ function numberWindows(regions) {
 
 async function readNumber(worker, canvas, regions, sets) {
   const votes = new Map();
+  const loose = new Map();
   const seen = [];
-  for (const r of numberWindows(regions)) {
-    const text = (await ocr(worker, prep(canvas, r, { mode: 'adapt', targetH: 140 }), '6', 'number')).text;
+  const take = (text) => {
     seen.push(text);
     for (const p of parseNumbers(text)) {
-      if (!pickNumber([p], sets)) continue; // total must match a real set
+      if (!pickNumber([p], sets)) continue; // set size must exist
       const key = `${p.number}/${p.total}`;
       const v = votes.get(key) || { parsed: p, votes: 0 };
       v.votes++;
       votes.set(key, v);
     }
-    // Stop once the same number was read twice.
-    if ([...votes.values()].some((v) => v.votes >= 2)) break;
+    for (const p of parseLooseNumbers(text)) {
+      if (!pickNumber([p], sets)) continue;
+      const key = `${p.number}/${p.total}`;
+      if (!loose.has(key)) loose.set(key, { parsed: p, votes: 0.5 });
+    }
+  };
+  const windows = numberWindows(regions);
+  for (const r of windows) {
+    take((await ocr(worker, prep(canvas, r, { mode: 'adapt', targetH: 140 }), '6', 'number')).text);
+    if ([...votes.values()].some((v) => v.votes >= 2)) break; // read the same number twice
+  }
+  // Nothing clean: read the most likely windows again in plain grayscale.
+  if (!votes.size) {
+    for (const r of windows.slice(0, 6)) take((await ocr(worker, prep(canvas, r, { mode: 'gray', targetH: 140 }), '6', 'number')).text);
+  }
+  // Still nothing: promo numbers like SM57 are short words among graphics,
+  // which the "sparse text" mode reads better.
+  if (!votes.size && !parsePromo(seen.join(' '))) {
+    for (const r of windows.slice(0, 6)) {
+      take((await ocr(worker, prep(canvas, r, { mode: 'adapt', targetH: 140 }), '12', 'number')).text);
+      if (parsePromo(seen.join(' '))) break;
+    }
   }
   const numbers = [...votes.values()].sort((a, b) => b.votes - a.votes);
-  // No "136/189" style number: look for a promo number such as SM57.
-  return { numbers, promo: numbers.length ? null : parsePromo(seen.join(' ')) };
+  return {
+    numbers,
+    looseNumbers: numbers.length ? [] : [...loose.values()],
+    // No "136/189" style number: look for a promo number such as SM57.
+    promo: numbers.length ? null : parsePromo(seen.join(' ')),
+  };
 }
 
 // Reads the name line and returns the closest known card name.
@@ -409,9 +437,9 @@ async function readCard(canvas, regions) {
   const lang = state.lang;
   const [worker, sets, index] = await Promise.all([getWorker(), physicalSets(lang).catch(() => null), getNameIndex(lang)]);
   setStatus('Reading card…', 0);
-  const { numbers, promo } = await readNumber(worker, canvas, regions, sets);
+  const { numbers, looseNumbers, promo } = await readNumber(worker, canvas, regions, sets);
   const { texts, guess } = await readName(worker, canvas, regions, index);
-  return { numbers, promo, texts, guess };
+  return { numbers, looseNumbers, promo, texts, guess };
 }
 
 // ---------- Scan flow ----------
