@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Card Scan FR/EN</title>
+<meta name="description" content="Scan a Pokémon card with your camera and see its Cardmarket price, for French and English cards.">
+<meta name="theme-color" content="#151a2e">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=Figtree:wght@400;500;600&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: one narrow column, viewfinder first, results stack below it. */
+:root {
+  --bg: #f3f4f8;
+  --surface: #ffffff;
+  --ink: #151a2e;
+  --muted: #5d6380;
+  --line: #dfe1ea;
+  --accent: #f2b705;
+  --accent-ink: #151a2e;
+  --good: #1f8a5b;
+  --warn: #b5541c;
+  --display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+  --body: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e1222; --surface: #181d33; --ink: #eef0f8; --muted: #9aa0bf; --line: #2a3050;
+    --accent: #ffc928; --accent-ink: #151a2e; --good: #4cc98f; --warn: #f08a4b; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e1222; --surface: #181d33; --ink: #eef0f8; --muted: #9aa0bf; --line: #2a3050;
+  --accent: #ffc928; --accent-ink: #151a2e; --good: #4cc98f; --warn: #f08a4b; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+body {
+  margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.5 var(--body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 12px 40px;
+}
+img { max-width: 100%; }
+[hidden] { display: none !important; }
+main { max-width: 520px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+h1 { font: 800 1.5rem/1.1 var(--display); margin: 0; letter-spacing: -0.01em; }
+h1 span { color: var(--muted); font-weight: 600; }
+h2 { font: 800 1.35rem/1.2 var(--display); margin: 0; text-wrap: balance; }
+.label { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 600; }
+
+.lang { display: inline-flex; border: 2px solid var(--ink); border-radius: 999px; padding: 2px; }
+.lang button {
+  font: 600 0.9rem var(--body); border: 0; background: transparent; color: var(--ink);
+  padding: 6px 14px; border-radius: 999px; cursor: pointer; min-width: 52px;
+}
+.lang button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+
+.finder {
+  position: relative; background: #000; border-radius: 18px; overflow: hidden;
+  aspect-ratio: 3 / 4; max-width: 100%;
+}
+.finder video, .finder img.still { width: 100%; height: 100%; object-fit: cover; display: block; }
+.frame {
+  position: absolute; left: 50%; top: 50%; width: 72%; aspect-ratio: 63 / 88;
+  transform: translate(-50%, -50%); border-radius: 4.5%/3.2%;
+  box-shadow: 0 0 0 9999px rgba(8, 10, 20, 0.55); border: 2px solid var(--accent);
+}
+.frame::before, .frame::after {
+  content: ""; position: absolute; left: 6%; right: 6%; border: 1px dashed rgba(255, 255, 255, 0.55); border-radius: 4px;
+}
+.frame::before { top: 2.5%; height: 9%; }
+.frame::after { bottom: 2%; height: 7%; }
+.finder-msg {
+  position: absolute; inset: 0; display: grid; place-items: center; text-align: center;
+  color: #fff; padding: 24px; font-size: 0.95rem;
+}
+.hint { position: absolute; left: 0; right: 0; bottom: 10px; text-align: center; color: #fff; font-size: 0.8rem; opacity: 0.85; }
+
+.actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.btn {
+  font: 600 1rem var(--body); border-radius: 12px; padding: 12px 18px; cursor: pointer;
+  border: 2px solid var(--ink); background: transparent; color: var(--ink); flex: 1 1 140px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px; text-decoration: none;
+}
+.panel > .btn { flex: none; }
+.meta h2 { color: var(--ink); }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+.btn:focus-visible, .lang button:focus-visible, input:focus-visible, .cand:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+.status { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 0.95rem; }
+.bar { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
+
+.fields { display: grid; grid-template-columns: 1fr 120px; gap: 10px; }
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field input {
+  font: 500 1rem var(--body); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--ink); width: 100%;
+}
+.field input#num { font-family: var(--mono); }
+
+.cands { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.cand {
+  border: 2px solid transparent; background: var(--bg); border-radius: 10px; padding: 6px; cursor: pointer;
+  display: flex; flex-direction: column; gap: 4px; text-align: left; color: var(--ink); font: inherit; min-width: 0;
+}
+.cand.best { border-color: var(--accent); }
+.cand img, .cand .noimg { width: 100%; aspect-ratio: 63 / 88; object-fit: cover; border-radius: 6px; background: var(--line); }
+.cand b { font-size: 0.82rem; line-height: 1.2; overflow-wrap: anywhere; }
+.cand small { font: 500 0.7rem var(--mono); color: var(--muted); overflow-wrap: anywhere; }
+
+.result { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 14px; align-items: start; }
+.result img { width: 100%; border-radius: 8px; }
+.meta { font-size: 0.9rem; color: var(--muted); display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.meta .num { font-family: var(--mono); }
+.price-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.price-main strong { font: 800 2.2rem/1 var(--display); font-variant-numeric: tabular-nums; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 0.95rem; }
+th, td { text-align: right; padding: 7px 4px; border-bottom: 1px solid var(--line); }
+th:first-child, td:first-child { text-align: left; color: var(--muted); font-weight: 500; }
+thead th { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); }
+.note { font-size: 0.82rem; color: var(--muted); }
+.note.warn { color: var(--warn); }
+.empty { color: var(--muted); font-size: 0.95rem; }
+@media (max-width: 380px) { .fields { grid-template-columns: 1fr; } .result { grid-template-columns: 96px minmax(0, 1fr); } }
+@media (prefers-reduced-motion: reduce) { .bar i { transition: none; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Card Scan <span>FR/EN</span></h1>
+    <div class="lang" role="group" aria-label="Card language">
+      <button type="button" id="lang-fr" data-lang="fr" aria-pressed="true">FR</button>
+      <button type="button" id="lang-en" data-lang="en" aria-pressed="false">EN</button>
+    </div>
+  </header>
+
+  <section class="finder" id="finder" aria-label="Camera">
+    <video id="video" playsinline muted autoplay></video>
+    <img class="still" id="still" alt="Scanned photo" hidden>
+    <div class="frame" id="frame" aria-hidden="true"></div>
+    <div class="finder-msg" id="finder-msg">Tap <b>&nbsp;Start camera&nbsp;</b> or upload a photo of one card.</div>
+    <div class="hint" id="hint" hidden>Fit the card in the frame. Name in the top box, number in the bottom box.</div>
+  </section>
+
+  <div class="actions">
+    <button type="button" class="btn primary" id="btn-scan">Start camera</button>
+    <label class="btn" for="file">Upload photo</label>
+    <input type="file" id="file" accept="image/*" hidden>
+  </div>
+
+  <section class="panel" id="read-panel" aria-live="polite">
+    <div class="status" id="status">Pick FR or EN to match the card's language, then scan.</div>
+    <div class="bar" id="bar" hidden><i id="bar-fill"></i></div>
+    <form id="search-form" class="fields" autocomplete="off">
+      <div class="field">
+        <label class="label" for="name">Name</label>
+        <input id="name" name="name" placeholder="e.g. Fouinar">
+      </div>
+      <div class="field">
+        <label class="label" for="num">Number</label>
+        <input id="num" name="num" placeholder="136/189" inputmode="text">
+      </div>
+      <button type="submit" class="btn" id="btn-search" style="grid-column: 1 / -1">Search</button>
+    </form>
+  </section>
+
+  <section class="panel" id="cands-panel" hidden>
+    <div class="label" id="cands-title">Matches</div>
+    <div class="cands" id="cands"></div>
+  </section>
+
+  <section class="panel" id="result-panel" hidden></section>
+</main>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

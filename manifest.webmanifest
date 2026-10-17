@@ -1,0 +1,10 @@
+{
+  "name": "Card Scan FR/EN",
+  "short_name": "Card Scan",
+  "description": "Scan a Pokémon card and see its Cardmarket price.",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#151a2e",
+  "theme_color": "#151a2e",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
