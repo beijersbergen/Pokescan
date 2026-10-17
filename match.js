@@ -227,3 +227,60 @@ export function oneDigitOff(localId, parsed) {
   for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) diff++;
   return diff === 1;
 }
+
+// How well noisy OCR text matches one specific card name (0..1).
+// Tries every run of 1 to 4 words, so labels and stray letters are ignored.
+export function nameScore(cardName, texts) {
+  const key = normalize(cardName).replace(/\s/g, '');
+  if (!key) return 0;
+  let best = 0;
+  for (const text of texts || []) {
+    const words = normalize(text).split(' ').filter((w) => w.length >= 2 && !/^\d+$/.test(w));
+    for (let i = 0; i < words.length; i++) {
+      let p = '';
+      for (let j = i; j < Math.min(words.length, i + 4); j++) {
+        p += words[j];
+        if (p.length < Math.min(3, key.length)) continue;
+        const s = 1 - levenshtein(p, key) / Math.max(p.length, key.length);
+        if (s > best) best = s;
+      }
+    }
+  }
+  return best;
+}
+
+// Cross-checks each candidate card against everything that was read:
+// the number(s) at the bottom and the name text at the top.
+// numbers: [{ parsed, votes }], texts: raw name readings.
+export function scoreCandidates(cards, { numbers = [], texts = [] }) {
+  const totalVotes = numbers.reduce((s, n) => s + n.votes, 0) || 1;
+  return cards
+    .map((c) => {
+      let num = 0;
+      for (const { parsed, votes } of numbers) {
+        const w = 0.6 + 0.4 * (votes / totalVotes);
+        if (sameLocalId(c.localId, parsed)) num = Math.max(num, w);
+        else if (oneDigitOff(c.localId, parsed)) num = Math.max(num, 0.45 * w);
+      }
+      const nm = texts.length ? nameScore(c.name, texts) : 0;
+      const nameOk = nm >= 0.75, numOk = num >= 0.6;
+      const agree = numOk && nameOk ? 'both' : numOk ? 'number' : nameOk ? 'name' : 'weak';
+      // Name similarity under 0.4 is what random text scores, so it counts as no match.
+      const nameEvidence = Math.max(0, (nm - 0.4) / 0.6);
+      const score = 0.5 * num + 0.5 * nameEvidence + (c.exact ? 0.03 : 0);
+      return { ...c, score, numScore: num, nameMatch: nm, agree };
+    })
+    .sort((a, b) => b.score - a.score);
+}
+
+// True when the best candidate is clearly the card.
+export function isConfident(ranked) {
+  const [a, b] = ranked;
+  if (!a) return false;
+  if (a.agree === 'both') return !b || b.agree !== 'both' || a.score - b.score >= 0.1;
+  // Name clearly matches and the number is one digit off, while no other
+  // candidate's name comes close: a misread digit.
+  if (a.nameMatch >= 0.75 && a.numScore > 0 && ranked.slice(1).every((c) => c.nameMatch < 0.5)) return true;
+  if (ranked.length === 1) return a.score >= 0.4;
+  return a.agree !== 'weak' && a.score - b.score >= 0.25;
+}

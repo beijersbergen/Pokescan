@@ -1,6 +1,6 @@
 import {
-  parseNumbers, parsePromo, pickNumber, formatNumber, parseName, setsForTotal, sameLocalId, rankCandidates,
-  buildNameIndex, bestNameMatch, oneDigitOff, similarity, collectionPrice, collectionTotal,
+  parseNumbers, parsePromo, pickNumber, formatNumber, parseName, setsForTotal,
+  buildNameIndex, bestNameMatch, scoreCandidates, isConfident, collectionPrice, collectionTotal,
 } from './match.js';
 import { detectCard } from './vision.js';
 
@@ -161,44 +161,50 @@ async function physicalSets(lang) {
   return (sets || []).filter((s) => !pocket.has(s.id));
 }
 
-async function findCandidates(lang, name, numText) {
-  const parsed = pickNumber(parseNumbers(numText), null);
-  const promo = parsed ? null : parsePromo(numText);
+// Builds a short list of cards from what was read and cross-checks each one.
+// signals: { numbers: [{ parsed, votes }], promo, texts: [name readings], guess }
+async function lookup(lang, signals) {
+  const { promo = null, texts = [], guess = '' } = signals;
+  const numbers = [...(signals.numbers || [])];
   const pocket = await getPocketSets();
-  let cards = [];
+  const pool = new Map();
+  const add = (c, set, exact) => { if (!pool.has(c.id)) pool.set(c.id, { ...c, setName: set?.name || c.setName, official: set ? set.cardCount?.official ?? null : c.official, exact }); };
+
+  // 1. Number first: every card with a read number (or one digit off) in sets of that size.
+  //    Cards in those sets whose name matches are kept too, in case the number was misread.
   if (promo) {
     const set = await api(lang, `/sets/${promo.setId}`).catch(() => null);
-    for (const c of set?.cards || []) if (sameLocalId(c.localId, promo)) cards.push({ ...c, setName: set.name, official: null, exact: true });
+    for (const c of set?.cards || []) add(c, { ...set, cardCount: { official: null } }, true);
+    numbers.push({ parsed: promo, votes: 1 });
   }
-  if (parsed) {
-    // Sets whose printed count matches exactly come first.
-    const sets = setsForTotal(await physicalSets(lang), parsed.total)
-      .sort((a, b) => (b.cardCount.official === parsed.total) - (a.cardCount.official === parsed.total))
-      .slice(0, 10);
-    const full = await Promise.all(sets.map((s) => api(lang, `/sets/${encodeURIComponent(s.id)}`).catch(() => null)));
-    for (const set of full) {
-      if (!set || !set.cards) continue;
-      const exact = set.cardCount?.official === parsed.total;
-      for (const c of set.cards) {
-        const same = sameLocalId(c.localId, parsed);
-        // A misread digit (056 read as 058) is fixed when the name clearly matches.
-        const near = !same && name && oneDigitOff(c.localId, parsed) && similarity(c.name, name) >= 0.8;
-        if (same || near) cards.push({ ...c, setName: set.name, official: set.cardCount?.official, exact, numberMatch: same });
-      }
-    }
+  const totals = [...new Set(numbers.filter((n) => !n.parsed.promo).map((n) => n.parsed.total))].slice(0, 3);
+  if (totals.length) {
+    const all = await physicalSets(lang);
+    const sets = totals.flatMap((t) => setsForTotal(all, t).map((s) => ({ s, exact: s.cardCount.official === t }))).slice(0, 12);
+    const full = await Promise.all(sets.map(({ s }) => api(lang, `/sets/${encodeURIComponent(s.id)}`).catch(() => null)));
+    full.forEach((set, i) => { for (const c of set?.cards || []) add(c, set, sets[i].exact); });
   }
-  if (!cards.length && name && name.trim().length >= 3) {
-    const list = (await api(lang, `/cards?name=${encodeURIComponent(name.trim())}`)) || [];
-    cards = list.filter((c) => !pocket.has(setIdOf(c.id))).slice(0, 60);
-    if (parsed) {
-      const sameNum = cards.filter((c) => sameLocalId(c.localId, parsed));
-      if (sameNum.length) cards = sameNum;
-    }
+  let ranked = scoreCandidates([...pool.values()], { numbers, texts }).filter((c) => c.numScore >= 0.6 || c.nameMatch >= 0.75 || (c.numScore > 0 && c.nameMatch >= 0.55));
+
+  // 2. Nothing convincing from the number: search the database by the best name guess.
+  if ((!ranked.length || ranked[0].agree === 'weak') && guess && guess.length >= 3) {
+    const list = ((await api(lang, `/cards?name=${encodeURIComponent(guess)}`)) || [])
+      .filter((c) => !pocket.has(setIdOf(c.id)) && !pool.has(c.id)).slice(0, 60);
+    ranked = scoreCandidates([...ranked, ...list], { numbers, texts: texts.length ? texts : [guess] });
   }
-  return rankCandidates(cards, name)
-    .map((c) => ({ ...c, score: c.score + (c.exact ? 0.05 : 0) + (c.numberMatch === false ? -0.1 : 0) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 12);
+  window.__lastLookup = { signals, ranked: ranked.slice(0, 12).map((c) => [c.name, c.localId, +c.score.toFixed(2), +c.numScore.toFixed(2), +c.nameMatch.toFixed(2), c.agree]) };
+  return ranked.slice(0, 12);
+}
+
+// Signals from the two text fields (manual search).
+function signalsFromFields(name, num) {
+  const parsed = parseNumbers(num);
+  return {
+    numbers: parsed.map((p) => ({ parsed: p, votes: 1 })),
+    promo: parsed.length ? null : parsePromo(num),
+    texts: name ? [name] : [],
+    guess: name,
+  };
 }
 
 // ---------- Camera ----------
@@ -353,15 +359,24 @@ function numberWindows(regions) {
 }
 
 async function readNumber(worker, canvas, regions, sets) {
+  const votes = new Map();
   const seen = [];
   for (const r of numberWindows(regions)) {
     const text = (await ocr(worker, prep(canvas, r, { mode: 'adapt', targetH: 140 }), '6', 'number')).text;
-    const pick = pickNumber(parseNumbers(text), sets);
-    if (pick) return pick;
     seen.push(text);
+    for (const p of parseNumbers(text)) {
+      if (!pickNumber([p], sets)) continue; // total must match a real set
+      const key = `${p.number}/${p.total}`;
+      const v = votes.get(key) || { parsed: p, votes: 0 };
+      v.votes++;
+      votes.set(key, v);
+    }
+    // Stop once the same number was read twice.
+    if ([...votes.values()].some((v) => v.votes >= 2)) break;
   }
+  const numbers = [...votes.values()].sort((a, b) => b.votes - a.votes);
   // No "136/189" style number: look for a promo number such as SM57.
-  return parsePromo(seen.join(' '));
+  return { numbers, promo: numbers.length ? null : parsePromo(seen.join(' ')) };
 }
 
 // Reads the name line and returns the closest known card name.
@@ -369,6 +384,7 @@ async function readName(worker, canvas, regions, index) {
   const region = regions.loose ? { x: 0.05, y: 0.02, w: 0.8, h: 0.2 } : { x: 0.05, y: 0.025, w: 0.72, h: 0.07 };
   const psm = regions.loose ? '11' : '7';
   let best = null, raw = '';
+  const texts = [];
   const mid = regions.loose ? region : { x: 0.12, y: 0.025, w: 0.5, h: 0.07 };
   const tries = [
     [region, { mode: 'gray', targetH: 120 }], [region, { mode: 'dark', targetH: 110 }], [mid, { mode: 'gray', targetH: 110 }],
@@ -377,14 +393,15 @@ async function readName(worker, canvas, regions, index) {
   for (const [r, opts] of tries) {
     const data = await ocr(worker, prep(canvas, r, opts), psm, 'name');
     const lines = linesOf(data);
+    texts.push(...lines.map((l) => l.text));
     for (const l of lines) {
       const hit = bestNameMatch(l.text, index);
       if (hit && (!best || hit.score > best.score)) best = hit;
     }
     if (!raw) raw = parseName(lines);
-    if (best && best.score >= 0.85) break;
+    if (best && best.score >= 0.9) break;
   }
-  return best && best.score >= 0.7 ? best.name : raw;
+  return { texts, guess: best && best.score >= 0.7 ? best.name : raw };
 }
 
 async function readCard(canvas, regions) {
@@ -392,9 +409,9 @@ async function readCard(canvas, regions) {
   const lang = state.lang;
   const [worker, sets, index] = await Promise.all([getWorker(), physicalSets(lang).catch(() => null), getNameIndex(lang)]);
   setStatus('Reading card…', 0);
-  const number = await readNumber(worker, canvas, regions, sets);
-  const name = await readName(worker, canvas, regions, index);
-  return { name, number: formatNumber(number) };
+  const { numbers, promo } = await readNumber(worker, canvas, regions, sets);
+  const { texts, guess } = await readName(worker, canvas, regions, index);
+  return { numbers, promo, texts, guess };
 }
 
 // ---------- Scan flow ----------
@@ -421,15 +438,15 @@ async function runScan(canvas, regions) {
   els.scan.disabled = true;
   closeSheet();
   try {
-    const { name, number } = await readCard(canvas, regions);
-    els.name.value = name;
-    els.num.value = number;
-    if (!name && !number) {
+    const signals = await readCard(canvas, regions);
+    els.name.value = signals.guess || '';
+    els.num.value = formatNumber(signals.numbers[0]?.parsed || signals.promo);
+    if (!signals.guess && !signals.numbers.length && !signals.promo) {
       setStatus('Could not read the card. Try more light and less glare, or type the name or number.');
       els.manual.open = true;
       return;
     }
-    await search();
+    await search(signals);
   } catch (e) {
     setStatus(e.message || 'Something went wrong while reading the card.');
   } finally {
@@ -438,23 +455,24 @@ async function runScan(canvas, regions) {
   }
 }
 
-async function search() {
+async function search(scanSignals) {
   const name = els.name.value.trim();
   const num = els.num.value.trim();
-  if (!name && !num) { setStatus('Type a name or a number like 136/189.'); return; }
+  if (!scanSignals && !name && !num) { setStatus('Type a name or a number like 136/189.'); return; }
+  const signals = scanSignals || signalsFromFields(name, num);
   const seq = ++state.seq;
   const lang = state.lang;
   setStatus('Looking up the card…');
   try {
-    const cands = await findCandidates(lang, name, num);
+    const cands = await lookup(lang, signals);
     if (seq !== state.seq) return;
     if (!cands.length) {
       setStatus(`No ${lang === 'fr' ? 'French' : 'English'} card found for “${[name, num].filter(Boolean).join(' ')}”. Check FR/EN, or fix the name or number.`);
       els.manual.open = true;
       return;
     }
-    const [a, b] = cands;
-    const sure = cands.length === 1 || (a.score >= 0.75 && (!b || a.score - b.score >= 0.15));
+    const a = cands[0];
+    const sure = isConfident(cands);
     state.match = { lang, cands, selected: 0, card: null, qty: 1, sure };
     setStatus(sure ? `Found ${a.name}.` : `${cands.length} possible cards. Pick yours.`);
     await selectCandidate(0, seq);
@@ -522,7 +540,11 @@ function renderSheet() {
           ? (price ? `30-day average${price.holo ? ' (holo)' : ''}${trend > 0 ? ` · trend ${eur(trend)}` : ''}` : 'Cardmarket has no recent sales for this card.')
           : m.error ? m.error : 'Loading price…'),
         m.error ? el('button', { type: 'button', class: 'btn small quiet', onclick: () => selectCandidate(m.selected) }, 'Try again') : null,
-        owned ? el('div', { class: 'num' }, `You have ${owned.qty}`) : null)),
+        owned ? el('div', { class: 'num' }, `You have ${owned.qty}`) : null,
+        c.agree ? el('div', { class: 'check' }, {
+          both: '✓ Number and name match', number: '✓ Number matches · name unclear',
+          name: '✓ Name matches · number unclear', weak: 'Unsure: check the picture',
+        }[c.agree]) : null)),
     el('div', { class: 'add-row' },
       el('div', { class: 'stepper' },
         el('button', { type: 'button', 'aria-label': 'One less', onclick: () => setQty(m.qty - 1) }, '−'),
