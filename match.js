@@ -54,7 +54,32 @@ export function pickNumber(cands, sets) {
 }
 
 export function formatNumber(p) {
-  return p ? `${p.number}/${p.prefix}${p.total}` : '';
+  if (!p) return '';
+  return p.promo ? p.label : `${p.number}/${p.prefix}${p.total}`;
+}
+
+// Black Star Promo numbers have no "/total": SM57, SWSH123, XY45, BW12, DP03,
+// HGSS10. Scarlet & Violet and Mega Evolution promos print "SVP 045" / "MEP 012".
+const PROMO_SETS = [
+  ['SWSH', 'swshp', true], ['HGSS', 'hgssp', true], ['SVP', 'svp', false], ['MEP', 'mep', false],
+  ['SM', 'smp', true], ['XY', 'xyp', true], ['BW', 'bwp', true], ['DP', 'dpp', true],
+];
+
+export function parsePromo(text) {
+  if (!text) return null;
+  const t = text.toUpperCase().replace(/[O](?=\d)/g, '0');
+  for (const [prefix, setId, keepPrefix] of PROMO_SETS) {
+    const m = t.match(new RegExp(`(?:^|[^A-Z])${prefix}\\s?(?:(?:EN|FR|DE|IT|ES|PT|NL)\\s)?([0-9O]{1,3})(?![0-9/])`));
+    if (m) {
+      const digits = m[1].replace(/O/g, '0');
+      const numeric = parseInt(digits, 10);
+      return {
+        promo: true, setId, numeric, prefix: keepPrefix ? prefix : '', total: null,
+        number: (keepPrefix ? prefix : '') + digits, label: `${prefix}${keepPrefix ? '' : ' '}${digits}`,
+      };
+    }
+  }
+  return null;
 }
 
 // Picks the most likely card name from the text at the top of the card.

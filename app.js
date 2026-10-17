@@ -1,5 +1,5 @@
 import {
-  parseNumbers, pickNumber, formatNumber, parseName, setsForTotal, sameLocalId, rankCandidates,
+  parseNumbers, parsePromo, pickNumber, formatNumber, parseName, setsForTotal, sameLocalId, rankCandidates,
   buildNameIndex, bestNameMatch, collectionPrice, collectionTotal,
 } from './match.js';
 
@@ -161,8 +161,13 @@ async function physicalSets(lang) {
 
 async function findCandidates(lang, name, numText) {
   const parsed = pickNumber(parseNumbers(numText), null);
+  const promo = parsed ? null : parsePromo(numText);
   const pocket = await getPocketSets();
   let cards = [];
+  if (promo) {
+    const set = await api(lang, `/sets/${promo.setId}`).catch(() => null);
+    for (const c of set?.cards || []) if (sameLocalId(c.localId, promo)) cards.push({ ...c, setName: set.name, official: null, exact: true });
+  }
   if (parsed) {
     // Sets whose printed count matches exactly come first.
     const sets = setsForTotal(await physicalSets(lang), parsed.total)
@@ -303,6 +308,11 @@ async function readNumber(worker, canvas, regions, sets) {
     const pick = pickNumber(found, sets);
     if (pick) return pick;
   }
+  // No "136/189" style number: look for a promo number such as SM57.
+  for (const r of regions.numbers) {
+    const promo = parsePromo((await ocr(worker, prep(canvas, r), 'number')).text);
+    if (promo) return promo;
+  }
   return null;
 }
 
@@ -332,7 +342,7 @@ async function readCard(canvas, regions) {
   if (!number || !name) {
     // Last try for loose photos: read the whole image.
     const all = await ocr(worker, prep(canvas, { x: 0, y: 0, w: 1, h: 1 }), 'name');
-    if (!number) number = pickNumber(parseNumbers(all.text), sets);
+    if (!number) number = pickNumber(parseNumbers(all.text), sets) || parsePromo(all.text);
     if (!name) name = bestNameMatch(all.text, index)?.name || '';
   }
   return { name, number: formatNumber(number) };
@@ -429,7 +439,7 @@ function renderSheet() {
   const qtyOut = el('output', {}, m.qty);
   const setQty = (q) => { m.qty = Math.max(1, Math.min(99, q)); qtyOut.textContent = m.qty; };
 
-  els.sheetInner.replaceChildren(
+  els.sheetInner.replaceChildren(...[
     el('div', { class: 'grab' }),
     el('div', { class: 'sheet-head' },
       el('div', { class: 'label', id: 'sheet-title' }, m.sure ? 'Match' : 'Is this your card?'),
@@ -439,7 +449,7 @@ function renderSheet() {
       el('div', { class: 'meta' },
         el('h2', {}, card?.name || c.name),
         el('div', {}, card?.set?.name || c.setName || ''),
-        el('div', { class: 'num' }, `${c.localId}${(card?.set?.cardCount?.official || c.official) ? '/' + (card?.set?.cardCount?.official || c.official) : ''}`),
+        el('div', { class: 'num' }, `${c.localId}${c.official ? '/' + c.official : ''}`),
         card?.rarity ? el('div', {}, card.rarity) : null,
         el('div', { class: 'price-big' }, card ? (price ? eur(price.value) : 'No price') : m.error ? '?' : '…'),
         el('div', {}, card
@@ -458,7 +468,7 @@ function renderSheet() {
       type: 'button', class: 'alt', 'aria-current': String(i === m.selected), onclick: () => selectCandidate(i),
     }, cardImg(x.image, 'low'), el('b', {}, x.name), el('small', {}, `${x.setName ? x.setName + ' · ' : ''}${x.localId}`)))) : null,
     el('p', { class: 'note' }, 'Cardmarket lists one price for a card across all languages, so French and English copies show the same price.'),
-  );
+  ].filter(Boolean));
   openSheet();
 }
 
@@ -477,7 +487,7 @@ function addToCollection() {
   } else {
     item = {
       id: c.id, lang: m.lang, name: card?.name || c.name, setName: card?.set?.name || c.setName || '', localId: card?.localId || c.localId,
-      official: card?.set?.cardCount?.official || c.official || null, image: card?.image || c.image || null, qty: added, added: Date.now(),
+      official: 'official' in c ? c.official : card?.set?.cardCount?.official || null, image: card?.image || c.image || null, qty: added, added: Date.now(),
       price: null, priceUpdated: null,
     };
     state.collection.push(item);
