@@ -22,19 +22,24 @@ export function parseNumbers(text) {
   const cleaned = text
     .toUpperCase()
     .replace(/(\d)\s*[|\\IL!]\s*(\d)/g, '$1/$2');
-  // O, B and S inside a number are read as 0, 8 and 5 (common OCR mix-ups).
-  // A trailing 0/O right after the set size is usually the rarity symbol (● ◆).
-  const re = /([A-Z]{0,3}?)\s?([0-9OBS]{1,3})\s*\/\s*([A-Z]{0,3}?)\s?([0-9OBS]{2,3})[0O]?(?![0-9])/g;
+  // The set size can be followed by the rarity symbol (● ◆ ★), which OCR
+  // often reads as one or two extra 0/O characters: "53/9800" is 53/98.
+  const re = /([A-Z]{0,3}?)\s?([0-9OBS]{1,3})\s*\/\s*([A-Z]{0,3}?)\s?([0-9OBS]{2,5})(?![0-9])/g;
+  const fix = (t) => t.replace(/O/g, '0').replace(/B/g, '8').replace(/S/g, '5');
   const out = [];
   let m;
   while ((m = re.exec(cleaned))) {
     if (!/\d/.test(m[2]) || !/\d/.test(m[4])) continue;
-    const fix = (t) => t.replace(/O/g, '0').replace(/B/g, '8').replace(/S/g, '5');
     const num = fix(m[2]);
-    const total = fix(m[4]);
+    const after = fix(m[4]);
     const prefix = m[1] && m[1] === m[3] ? m[1] : '';
-    const cand = { number: prefix + num, numeric: parseInt(num, 10), total: parseInt(total, 10), prefix };
-    if (cand.total > 0) out.push(cand);
+    for (const len of [3, 2]) {
+      const total = after.slice(0, len);
+      // Sizes are printed as "98" or "098", never as "08".
+      if (total.length !== len || (len === 2 && total[0] === '0') || /^0+$/.test(total)) continue;
+      if (!/^0*$/.test(after.slice(len))) continue; // only rarity-symbol zeros may follow
+      out.push({ number: prefix + num, numeric: parseInt(num, 10), total: parseInt(total, 10), prefix });
+    }
   }
   return out;
 }
@@ -261,14 +266,16 @@ export function scoreCandidates(cards, { numbers = [], texts = [] }) {
         // A slash-less reading is weak evidence on its own.
         const w = parsed.loose ? 0.3 : 0.6 + 0.4 * (votes / totalVotes);
         if (sameLocalId(c.localId, parsed)) num = Math.max(num, w);
-        else if (oneDigitOff(c.localId, parsed)) num = Math.max(num, 0.45 * w);
+        // One digit off only counts inside a set of the size that was read.
+        else if (c.setSizeMatch && oneDigitOff(c.localId, parsed)) num = Math.max(num, 0.45 * w);
       }
       const nm = texts.length ? nameScore(c.name, texts) : 0;
       const nameOk = nm >= 0.75, numOk = num >= 0.6;
       const agree = numOk && nameOk ? 'both' : numOk ? 'number' : nameOk ? 'name' : 'weak';
       // Name similarity under 0.4 is what random text scores, so it counts as no match.
       const nameEvidence = Math.max(0, (nm - 0.4) / 0.6);
-      const score = 0.5 * num + 0.5 * nameEvidence + (c.exact ? 0.03 : 0);
+      // From a set of the size that was read (the "/98" part): small bonus.
+      const score = 0.5 * num + 0.5 * nameEvidence + (c.exact ? 0.03 : 0) + (c.setSizeMatch ? 0.1 : 0);
       return { ...c, score, numScore: num, nameMatch: nm, agree };
     })
     .sort((a, b) => b.score - a.score);

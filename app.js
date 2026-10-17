@@ -168,7 +168,7 @@ async function lookup(lang, signals) {
   const numbers = [...(signals.numbers || [])];
   const pocket = await getPocketSets();
   const pool = new Map();
-  const add = (c, set, exact) => { if (!pool.has(c.id)) pool.set(c.id, { ...c, setName: set?.name || c.setName, official: set ? set.cardCount?.official ?? null : c.official, exact }); };
+  const add = (c, set, exact) => { if (!pool.has(c.id)) pool.set(c.id, { ...c, setName: set?.name || c.setName, official: set ? set.cardCount?.official ?? null : c.official, exact, setSizeMatch: !!set }); };
 
   // 1. Number first: every card with a read number (or one digit off) in sets of that size.
   //    Cards in those sets whose name matches are kept too, in case the number was misread.
@@ -194,13 +194,21 @@ async function lookup(lang, signals) {
   //    Also when only a slash-less reading was found: a chance match there
   //    must compete with every card of that name.
   const onlyLoose = !(signals.numbers || []).length && !promo;
-  if ((!ranked.length || ranked[0].agree === 'weak' || onlyLoose) && guess && guess.length >= 3) {
+  // The name was read clearly but the number points to a differently named
+  // card: the number is probably wrong, so the name gets a say too.
+  const contradiction = !!ranked.length && ranked[0].nameMatch < 0.5 && (signals.guessScore || 0) >= 0.85;
+  if ((!ranked.length || ranked[0].agree === 'weak' || onlyLoose || contradiction) && guess && guess.length >= 3) {
     const list = ((await api(lang, `/cards?name=${encodeURIComponent(guess)}`)) || [])
       .filter((c) => !pocket.has(setIdOf(c.id)) && !pool.has(c.id)).slice(0, 60);
     ranked = scoreCandidates([...ranked, ...list], { numbers, texts: texts.length ? texts : [guess] });
+    // A clearly read name rules out cards with a different name.
+    if (contradiction) ranked = ranked.filter((c) => c.nameMatch >= 0.5);
   }
+  ranked.contradiction = contradiction;
   window.__lastLookup = { signals, ranked: ranked.slice(0, 12).map((c) => [c.name, c.localId, +c.score.toFixed(2), +c.numScore.toFixed(2), +c.nameMatch.toFixed(2), c.agree]) };
-  return ranked.slice(0, 12);
+  const top = ranked.slice(0, 12);
+  top.contradiction = contradiction;
+  return top;
 }
 
 // Signals from the two text fields (manual search).
@@ -211,6 +219,7 @@ function signalsFromFields(name, num) {
     promo: parsed.length ? null : parsePromo(num),
     texts: name ? [name] : [],
     guess: name,
+    guessScore: name ? 1 : 0,
   };
 }
 
@@ -432,7 +441,7 @@ async function readName(worker, canvas, regions, index) {
     if (!raw) raw = parseName(lines);
     if (best && best.score >= 0.9) break;
   }
-  return { texts, guess: best && best.score >= 0.7 ? best.name : raw };
+  return { texts, guess: best && best.score >= 0.7 ? best.name : raw, guessScore: best && best.score >= 0.7 ? best.score : 0 };
 }
 
 async function readCard(canvas, regions) {
@@ -441,8 +450,8 @@ async function readCard(canvas, regions) {
   const [worker, sets, index] = await Promise.all([getWorker(), physicalSets(lang).catch(() => null), getNameIndex(lang)]);
   setStatus('Reading card…', 0);
   const { numbers, looseNumbers, promo } = await readNumber(worker, canvas, regions, sets);
-  const { texts, guess } = await readName(worker, canvas, regions, index);
-  return { numbers, looseNumbers, promo, texts, guess };
+  const { texts, guess, guessScore } = await readName(worker, canvas, regions, index);
+  return { numbers, looseNumbers, promo, texts, guess, guessScore };
 }
 
 // ---------- Scan flow ----------
@@ -503,7 +512,7 @@ async function search(scanSignals) {
       return;
     }
     const a = cands[0];
-    const sure = isConfident(cands);
+    const sure = isConfident(cands) && !(cands.contradiction && cands[0].agree !== 'both');
     state.match = { lang, cands, selected: 0, card: null, qty: 1, sure };
     setStatus(sure ? `Found ${a.name}.` : `${cands.length} possible cards. Pick yours.`);
     await selectCandidate(0, seq);
@@ -585,7 +594,7 @@ function renderSheet() {
     m.cands.length > 1 ? el('div', { class: 'label' }, 'Not this card? Pick another') : null,
     m.cands.length > 1 ? el('div', { class: 'alts' }, m.cands.map((x, i) => el('button', {
       type: 'button', class: 'alt', 'aria-current': String(i === m.selected), onclick: () => selectCandidate(i),
-    }, cardImg(x.image, 'low'), el('b', {}, x.name), el('small', {}, `${x.setName ? x.setName + ' · ' : ''}${x.localId}`)))) : null,
+    }, cardImg(x.image, 'low'), el('b', {}, x.name), el('small', {}, `${x.setName || setIdOf(x.id)} · ${x.localId}`)))) : null,
     el('p', { class: 'note' }, 'Cardmarket lists one price for a card across all languages, so French and English copies show the same price.'),
   ].filter(Boolean));
   openSheet();
