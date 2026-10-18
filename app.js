@@ -26,7 +26,7 @@ const $ = (id) => document.getElementById(id);
 const els = {
   video: $('video'), still: $('still'), frame: $('frame'), finder: $('finder'), finderMsg: $('finder-msg'), hint: $('hint'),
   scan: $('btn-scan'), file: $('file'), status: $('status'), bar: $('bar'), barFill: $('bar-fill'),
-  form: $('search-form'), name: $('name'), num: $('num'), manual: $('manual'),
+  form: $('search-form'), name: $('name'), num: $('num'), zoom: $('zoom'),
   scrim: $('scrim'), sheet: $('sheet'), sheetInner: $('sheet-inner'),
   viewScan: $('view-scan'), viewCol: $('view-collection'), tabScan: $('tab-scan'), tabCol: $('tab-collection'), badge: $('badge'),
   total: $('total'), totalSub: $('total-sub'), refresh: $('btn-refresh'), refreshBar: $('refresh-bar'), refreshFill: $('refresh-fill'),
@@ -483,7 +483,6 @@ async function runScan(canvas, regions) {
     els.num.value = formatNumber(signals.numbers[0]?.parsed || signals.promo);
     if (!signals.guess && !signals.numbers.length && !signals.promo) {
       setStatus('Could not read the card. Try more light and less glare, or type the name or number.');
-      els.manual.open = true;
       return;
     }
     await search(signals);
@@ -508,7 +507,6 @@ async function search(scanSignals) {
     if (seq !== state.seq) return;
     if (!cands.length) {
       setStatus(`No ${lang === 'fr' ? 'French' : 'English'} card found for “${[name, num].filter(Boolean).join(' ')}”. Check FR/EN, or fix the name or number.`);
-      els.manual.open = true;
       return;
     }
     const a = cands[0];
@@ -651,6 +649,20 @@ function addToCollection() {
   });
 }
 
+// ---------- Enlarged card ----------
+function openZoom(it) {
+  const src = imgFor(it.image, 'high');
+  els.zoom.replaceChildren(...[
+    src ? el('img', { src, alt: it.name }) : el('p', {}, 'No picture available for this card.'),
+    el('p', {}, it.name, el('br'), el('small', {}, `${it.setName} · ${it.localId}${it.official ? '/' + it.official : ''} · tap to close`)),
+  ]);
+  els.zoom.hidden = false;
+}
+function closeZoom() {
+  els.zoom.hidden = true;
+  els.zoom.replaceChildren();
+}
+
 // ---------- Collection ----------
 function renderBadge() {
   const n = state.collection.reduce((s, it) => s + it.qty, 0);
@@ -695,7 +707,7 @@ function renderCollection() {
       saveCollection(); renderBadge(); renderCollection();
     };
     return el('div', { class: 'row' },
-      cardImg(it.image, 'low'),
+      el('button', { type: 'button', class: 'thumb', 'aria-label': `Show ${it.name} larger`, onclick: () => openZoom(it) }, cardImg(it.image, 'low')),
       el('div', { class: 'row-main' },
         el('b', {}, it.name),
         el('small', {}, el('span', { class: 'chip' }, it.lang.toUpperCase()), `${it.setName} · ${it.localId}${it.official ? '/' + it.official : ''}`),
@@ -796,7 +808,12 @@ els.file.addEventListener('change', async () => {
 
 els.form.addEventListener('submit', (e) => { e.preventDefault(); search(); });
 els.scrim.addEventListener('click', closeSheet);
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !els.sheet.hidden) closeSheet(); });
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  if (!els.zoom.hidden) closeZoom();
+  else if (!els.sheet.hidden) closeSheet();
+});
+els.zoom.addEventListener('click', closeZoom);
 els.tabScan.addEventListener('click', () => showTab('scan'));
 els.tabCol.addEventListener('click', () => { closeSheet(); showTab('collection'); });
 els.refresh.addEventListener('click', refreshPrices);

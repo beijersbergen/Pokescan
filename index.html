@@ -103,9 +103,17 @@ h2 { font: 800 1.3rem/1.2 var(--display); margin: 0; text-wrap: balance; color: 
 .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.2s; }
 
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-details.panel summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; justify-content: space-between; }
-details.panel summary::after { content: "+"; color: var(--muted); font-weight: 500; }
-details.panel[open] summary::after { content: "–"; }
+/* Enlarged card */
+.zoom {
+  position: fixed; inset: 0; z-index: 40; background: rgba(8, 10, 20, 0.88); display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 12px; cursor: zoom-out;
+  padding: calc(16px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) calc(16px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+}
+.zoom img { max-width: min(100%, 520px); max-height: calc(100dvh - 120px); width: auto; height: auto; border-radius: 4.5%/3.2%; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
+.zoom p { margin: 0; color: #fff; font-size: 0.95rem; text-align: center; }
+.zoom small { color: rgba(255, 255, 255, 0.7); }
+.thumb { border: 0; padding: 0; background: none; cursor: zoom-in; border-radius: 4px; width: 52px; display: block; }
+.thumb:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .fields { display: grid; grid-template-columns: 1fr 120px; gap: 10px; }
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .field input, select {
@@ -219,8 +227,8 @@ details.panel[open] summary::after { content: "–"; }
     </div>
     <div class="status" id="status" aria-live="polite">Pick FR or EN to match the card, then scan.</div>
     <div class="bar" id="bar" hidden><i id="bar-fill"></i></div>
-    <details class="panel" id="manual">
-      <summary>Type name or number</summary>
+    <section class="panel" id="manual" aria-labelledby="manual-title">
+      <div class="label" id="manual-title">Or type the name or number</div>
       <form id="search-form" class="fields" autocomplete="off">
         <div class="field">
           <label class="label" for="name">Name</label>
@@ -232,7 +240,7 @@ details.panel[open] summary::after { content: "–"; }
         </div>
         <button type="submit" class="btn" style="grid-column: 1 / -1">Search</button>
       </form>
-    </details>
+    </section>
   </section>
 
   <section class="view" id="view-collection" role="tabpanel" aria-labelledby="tab-collection" hidden>
@@ -276,6 +284,7 @@ details.panel[open] summary::after { content: "–"; }
   <button type="button" role="tab" id="tab-collection" aria-controls="view-collection" aria-selected="false">Collection <span class="badge" id="badge" hidden>0</span></button>
 </nav>
 <div class="toast" id="toast" role="status" hidden></div>
+<div class="zoom" id="zoom" role="dialog" aria-modal="true" aria-label="Card image" hidden></div>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <script type="module" src="app.js"></script>
