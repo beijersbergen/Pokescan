@@ -27,3 +27,9 @@ NODE_USE_ENV_PROXY=1 node scripts/build-names.mjs
 npx http-server -p 8080
 ```
 Then open http://localhost:8080. No build step and no API keys.
+
+## Publishing a new version
+Run this before every commit, so phones load the new files and show the update banner:
+```
+node scripts/stamp-version.mjs
+```

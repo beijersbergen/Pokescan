@@ -6,6 +6,7 @@
 <title>Card Scan FR/EN</title>
 <meta name="description" content="Scan Pokémon cards, build your collection and see its Cardmarket value. French and English cards.">
 <meta name="theme-color" content="#151a2e">
+<meta name="app-version" content="20261018-115507">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon.svg">
@@ -197,6 +198,13 @@ h2 { font: 800 1.3rem/1.2 var(--display); margin: 0; text-wrap: balance; color: 
   background: var(--ink); color: var(--bg); padding: 10px 14px; border-radius: 12px; font-size: 0.92rem; display: flex; gap: 14px; align-items: center;
   max-width: calc(100% - 32px); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.25);
 }
+.update {
+  position: fixed; left: 0; right: 0; top: 0; z-index: 35; background: var(--accent); color: var(--accent-ink);
+  display: flex; align-items: center; justify-content: center; gap: 14px; font-weight: 600; font-size: 0.95rem;
+  padding: calc(10px + env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) 10px max(16px, env(safe-area-inset-left, 0px));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+.update button { font: 600 0.95rem var(--body); background: var(--accent-ink); color: var(--accent); border: 0; border-radius: 10px; padding: 8px 14px; cursor: pointer; }
 .toast button { background: transparent; border: 0; color: var(--accent); font: 600 0.92rem var(--body); cursor: pointer; padding: 0; }
 @media (max-width: 380px) { .fields { grid-template-columns: 1fr; } .match { grid-template-columns: 96px minmax(0, 1fr); } }
 @media (prefers-reduced-motion: reduce) { .bar i { transition: none; } .sheet { animation: none; } }
@@ -284,9 +292,10 @@ h2 { font: 800 1.3rem/1.2 var(--display); margin: 0; text-wrap: balance; color: 
   <button type="button" role="tab" id="tab-collection" aria-controls="view-collection" aria-selected="false">Collection <span class="badge" id="badge" hidden>0</span></button>
 </nav>
 <div class="toast" id="toast" role="status" hidden></div>
+<div class="update" id="update" role="status" hidden><span>A new version is available.</span><button type="button" id="btn-update">Reload</button></div>
 <div class="zoom" id="zoom" role="dialog" aria-modal="true" aria-label="Card image" hidden></div>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
-<script type="module" src="app.js"></script>
+<script type="module" src="app.js?v=20261018-115507"></script>
 </body>
 </html>

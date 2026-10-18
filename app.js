@@ -1,8 +1,8 @@
 import {
   parseNumbers, parseLooseNumbers, parsePromo, pickNumber, formatNumber, parseName, setsForTotal,
   buildNameIndex, bestNameMatch, scoreCandidates, isConfident, collectionPrice, collectionTotal,
-} from './match.js';
-import { detectCard } from './vision.js';
+} from './match.js?v=20261018-115507';
+import { detectCard } from './vision.js?v=20261018-115507';
 
 const API = 'https://api.tcgdex.net/v2';
 const OCR_LANG = { fr: 'fra', en: 'eng' };
@@ -137,7 +137,7 @@ async function api(lang, path, { fresh = false } = {}) {
 
 async function getNameIndex(lang) {
   if (!nameIndex[lang]) {
-    nameIndex[lang] = fetch(`data/names-${lang}.json`).then((r) => r.json()).then(buildNameIndex).catch(() => []);
+    nameIndex[lang] = fetch(`data/names-${lang}.json?v=20261018-115507`).then((r) => r.json()).then(buildNameIndex).catch(() => []);
   }
   return nameIndex[lang];
 }
@@ -832,6 +832,30 @@ for (const b of document.querySelectorAll('.lang button')) {
     getNameIndex(state.lang);
   });
 }
+
+// ---------- Updates ----------
+// The home screen app can stay open for days and Safari caches files, so the
+// app checks for a newer published version and offers a reload.
+const APP_VERSION = document.querySelector('meta[name="app-version"]')?.content || 'dev';
+let lastUpdateCheck = 0;
+async function checkForUpdate() {
+  if (APP_VERSION === 'dev' || Date.now() - lastUpdateCheck < 60000) return;
+  lastUpdateCheck = Date.now();
+  try {
+    const r = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
+    if (!r.ok) return;
+    const { version } = await r.json();
+    if (version && version !== APP_VERSION) {
+      const bar = $('update');
+      bar.hidden = false;
+      // A new address (?v=...) makes Safari fetch the page itself fresh too.
+      $('btn-update').onclick = () => location.replace(`${location.pathname}?v=${encodeURIComponent(version)}${location.hash}`);
+    }
+  } catch { /* offline: try again later */ }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') checkForUpdate(); });
+window.addEventListener('pageshow', checkForUpdate);
+checkForUpdate();
 
 // Show unexpected errors on screen, so they can be reported.
 window.addEventListener('error', (e) => toast(`Error: ${e.message}`));
